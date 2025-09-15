@@ -246,17 +246,26 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 
 // scaleDown removes workers by gracefully shutting them down
 func (wp *WorkerPool) scaleDown(workersToRemove int) error {
-	wp.mu.Lock()
-	defer wp.mu.Unlock()
-
 	if workersToRemove <= 0 {
 		return nil
 	}
 
+	wp.mu.Lock()
+
 	// Calculate how many of each type to remove based on current ratio
 	totalWorkers := len(wp.readers) + len(wp.writers)
 	if totalWorkers <= workersToRemove {
+		wp.mu.Unlock()
 		return nil // Don't remove all workers
+	}
+
+	currentQPS := wp.config.TargetQPS
+	newWorkerCount := totalWorkers - workersToRemove
+
+	// Calculate proportional QPS reduction
+	newQPS := int(float64(currentQPS) * float64(newWorkerCount) / float64(totalWorkers))
+	if newQPS < 10 {
+		newQPS = 10 // Minimum QPS
 	}
 
 	readWorkersToRemove := int(float64(workersToRemove) * float64(len(wp.readers)) / float64(totalWorkers))
@@ -297,7 +306,6 @@ func (wp *WorkerPool) scaleDown(workersToRemove int) error {
 		}
 	}
 
-	// Release mutex temporarily to wait for workers to stop
 	wp.mu.Unlock()
 
 	// Wait for workers to actually stop (with timeout)
@@ -349,13 +357,21 @@ func (wp *WorkerPool) scaleDown(workersToRemove int) error {
 		wp.writers = wp.writers[:lastIndex]
 	}
 
+	// Update rate limiter to reduce QPS proportionally
+	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
+	wp.config.TargetQPS = newQPS
+
+	wp.mu.Unlock()
+
 	slog.Info("Scale-down completed",
 		"readers_removed", readWorkersToRemove,
 		"writers_removed", writeWorkersToRemove,
 		"total_removed", readWorkersToRemove+writeWorkersToRemove,
 		"remaining_readers", len(wp.readers),
 		"remaining_writers", len(wp.writers),
-		"total_remaining", len(wp.readers)+len(wp.writers))
+		"total_remaining", len(wp.readers)+len(wp.writers),
+		"old_qps", currentQPS,
+		"new_qps", newQPS)
 
 	return nil
 }
