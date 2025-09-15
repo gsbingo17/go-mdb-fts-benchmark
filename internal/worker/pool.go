@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -19,6 +20,8 @@ type WorkerPool struct {
 	writers        []*WriteWorker
 	readerContexts []context.CancelFunc
 	writerContexts []context.CancelFunc
+	readerWGs      []*sync.WaitGroup
+	writerWGs      []*sync.WaitGroup
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
@@ -55,6 +58,8 @@ func NewWorkerPool(
 		writers:        make([]*WriteWorker, 0),
 		readerContexts: make([]context.CancelFunc, 0),
 		writerContexts: make([]context.CancelFunc, 0),
+		readerWGs:      make([]*sync.WaitGroup, 0),
+		writerWGs:      make([]*sync.WaitGroup, 0),
 	}
 }
 
@@ -99,27 +104,39 @@ func (wp *WorkerPool) Start() error {
 		wp.writers = append(wp.writers, worker)
 	}
 
-	// Start all workers with individual contexts
+	// Start all workers with individual contexts and waitgroups
 	for _, worker := range wp.readers {
 		workerCtx, cancel := context.WithCancel(wp.ctx)
 		wp.readerContexts = append(wp.readerContexts, cancel)
 
+		// Create individual waitgroup for this worker
+		workerWG := &sync.WaitGroup{}
+		wp.readerWGs = append(wp.readerWGs, workerWG)
+
 		wp.wg.Add(1)
-		go func(w *ReadWorker, ctx context.Context) {
+		workerWG.Add(1)
+		go func(w *ReadWorker, ctx context.Context, wg *sync.WaitGroup) {
 			defer wp.wg.Done()
+			defer wg.Done()
 			w.Start(ctx)
-		}(worker, workerCtx)
+		}(worker, workerCtx, workerWG)
 	}
 
 	for _, worker := range wp.writers {
 		workerCtx, cancel := context.WithCancel(wp.ctx)
 		wp.writerContexts = append(wp.writerContexts, cancel)
 
+		// Create individual waitgroup for this worker
+		workerWG := &sync.WaitGroup{}
+		wp.writerWGs = append(wp.writerWGs, workerWG)
+
 		wp.wg.Add(1)
-		go func(w *WriteWorker, ctx context.Context) {
+		workerWG.Add(1)
+		go func(w *WriteWorker, ctx context.Context, wg *sync.WaitGroup) {
 			defer wp.wg.Done()
+			defer wg.Done()
 			w.Start(ctx)
-		}(worker, workerCtx)
+		}(worker, workerCtx, workerWG)
 	}
 
 	return nil
@@ -167,15 +184,20 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 		)
 		wp.readers = append(wp.readers, worker)
 
-		// Create individual context for this worker
+		// Create individual context and waitgroup for this worker
 		workerCtx, cancel := context.WithCancel(wp.ctx)
 		wp.readerContexts = append(wp.readerContexts, cancel)
 
+		workerWG := &sync.WaitGroup{}
+		wp.readerWGs = append(wp.readerWGs, workerWG)
+
 		wp.wg.Add(1)
-		go func(w *ReadWorker, ctx context.Context) {
+		workerWG.Add(1)
+		go func(w *ReadWorker, ctx context.Context, wg *sync.WaitGroup) {
 			defer wp.wg.Done()
+			defer wg.Done()
 			w.Start(ctx)
-		}(worker, workerCtx)
+		}(worker, workerCtx, workerWG)
 	}
 
 	// Add write workers
@@ -190,15 +212,20 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 		)
 		wp.writers = append(wp.writers, worker)
 
-		// Create individual context for this worker
+		// Create individual context and waitgroup for this worker
 		workerCtx, cancel := context.WithCancel(wp.ctx)
 		wp.writerContexts = append(wp.writerContexts, cancel)
 
+		workerWG := &sync.WaitGroup{}
+		wp.writerWGs = append(wp.writerWGs, workerWG)
+
 		wp.wg.Add(1)
-		go func(w *WriteWorker, ctx context.Context) {
+		workerWG.Add(1)
+		go func(w *WriteWorker, ctx context.Context, wg *sync.WaitGroup) {
 			defer wp.wg.Done()
+			defer wg.Done()
 			w.Start(ctx)
-		}(worker, workerCtx)
+		}(worker, workerCtx, workerWG)
 	}
 
 	return nil
@@ -222,33 +249,100 @@ func (wp *WorkerPool) scaleDown(workersToRemove int) error {
 	readWorkersToRemove := int(float64(workersToRemove) * float64(len(wp.readers)) / float64(totalWorkers))
 	writeWorkersToRemove := workersToRemove - readWorkersToRemove
 
+	var workersToWait []*sync.WaitGroup
+	var workerTypes []string
+
 	// Remove read workers from the end
 	for i := 0; i < readWorkersToRemove && len(wp.readers) > 1; i++ {
 		lastIndex := len(wp.readers) - 1
 
-		// Cancel the worker's context to shut it down gracefully
+		// Cancel the worker's context to initiate graceful shutdown
 		if lastIndex < len(wp.readerContexts) {
 			wp.readerContexts[lastIndex]()
-			wp.readerContexts = wp.readerContexts[:lastIndex]
 		}
 
-		// Remove from slice
-		wp.readers = wp.readers[:lastIndex]
+		// Collect waitgroup to wait for actual shutdown
+		if lastIndex < len(wp.readerWGs) {
+			workersToWait = append(workersToWait, wp.readerWGs[lastIndex])
+			workerTypes = append(workerTypes, "read")
+		}
 	}
 
 	// Remove write workers from the end
 	for i := 0; i < writeWorkersToRemove && len(wp.writers) > 1; i++ {
 		lastIndex := len(wp.writers) - 1
 
-		// Cancel the worker's context to shut it down gracefully
+		// Cancel the worker's context to initiate graceful shutdown
 		if lastIndex < len(wp.writerContexts) {
 			wp.writerContexts[lastIndex]()
-			wp.writerContexts = wp.writerContexts[:lastIndex]
 		}
 
-		// Remove from slice
+		// Collect waitgroup to wait for actual shutdown
+		if lastIndex < len(wp.writerWGs) {
+			workersToWait = append(workersToWait, wp.writerWGs[lastIndex])
+			workerTypes = append(workerTypes, "write")
+		}
+	}
+
+	// Release mutex temporarily to wait for workers to stop
+	wp.mu.Unlock()
+
+	// Wait for workers to actually stop (with timeout)
+	shutdownTimeout := 10 * time.Second
+	for i, workerWG := range workersToWait {
+		done := make(chan struct{})
+		go func(wg *sync.WaitGroup) {
+			wg.Wait()
+			close(done)
+		}(workerWG)
+
+		select {
+		case <-done:
+			// Worker stopped successfully
+			slog.Info("Worker stopped successfully", "type", workerTypes[i], "timeout_used", false)
+		case <-time.After(shutdownTimeout):
+			// Worker didn't stop within timeout
+			slog.Warn("Worker shutdown timeout", "type", workerTypes[i], "timeout", shutdownTimeout)
+		}
+	}
+
+	// Re-acquire mutex to update tracking slices
+	wp.mu.Lock()
+
+	// Now remove from tracking slices (workers have actually stopped)
+	for i := 0; i < readWorkersToRemove && len(wp.readers) > 1; i++ {
+		lastIndex := len(wp.readers) - 1
+
+		if lastIndex < len(wp.readerContexts) {
+			wp.readerContexts = wp.readerContexts[:lastIndex]
+		}
+		if lastIndex < len(wp.readerWGs) {
+			wp.readerWGs = wp.readerWGs[:lastIndex]
+		}
+
+		wp.readers = wp.readers[:lastIndex]
+	}
+
+	for i := 0; i < writeWorkersToRemove && len(wp.writers) > 1; i++ {
+		lastIndex := len(wp.writers) - 1
+
+		if lastIndex < len(wp.writerContexts) {
+			wp.writerContexts = wp.writerContexts[:lastIndex]
+		}
+		if lastIndex < len(wp.writerWGs) {
+			wp.writerWGs = wp.writerWGs[:lastIndex]
+		}
+
 		wp.writers = wp.writers[:lastIndex]
 	}
+
+	slog.Info("Scale-down completed",
+		"readers_removed", readWorkersToRemove,
+		"writers_removed", writeWorkersToRemove,
+		"total_removed", readWorkersToRemove+writeWorkersToRemove,
+		"remaining_readers", len(wp.readers),
+		"remaining_writers", len(wp.writers),
+		"total_remaining", len(wp.readers)+len(wp.writers))
 
 	return nil
 }
