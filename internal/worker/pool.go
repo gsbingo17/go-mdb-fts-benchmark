@@ -163,7 +163,9 @@ func (wp *WorkerPool) Stop() {
 
 // ScaleWorkers dynamically adjusts the number of workers
 func (wp *WorkerPool) ScaleWorkers(newWorkerCount int) error {
+	wp.mu.RLock()
 	currentCount := len(wp.readers) + len(wp.writers)
+	wp.mu.RUnlock()
 
 	if newWorkerCount > currentCount {
 		// Scale up
@@ -178,8 +180,19 @@ func (wp *WorkerPool) ScaleWorkers(newWorkerCount int) error {
 
 // scaleUp adds more workers
 func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
+	if additionalWorkers <= 0 {
+		return nil
+	}
+
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
+
+	currentWorkers := len(wp.readers) + len(wp.writers)
+	currentQPS := wp.config.TargetQPS
+	newWorkerCount := currentWorkers + additionalWorkers
+
+	// Calculate proportional QPS increase
+	newQPS := int(float64(currentQPS) * float64(newWorkerCount) / float64(currentWorkers))
 
 	readWorkerCount := int(float64(additionalWorkers) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
 	writeWorkerCount := additionalWorkers - readWorkerCount
@@ -240,6 +253,20 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 			w.Start(ctx)
 		}(worker, workerCtx, workerWG)
 	}
+
+	// Update rate limiter to increase QPS proportionally
+	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
+	wp.config.TargetQPS = newQPS
+
+	slog.Info("Scale-up completed",
+		"readers_added", readWorkerCount,
+		"writers_added", writeWorkerCount,
+		"total_added", additionalWorkers,
+		"total_readers", len(wp.readers),
+		"total_writers", len(wp.writers),
+		"total_workers", len(wp.readers)+len(wp.writers),
+		"old_qps", currentQPS,
+		"new_qps", newQPS)
 
 	return nil
 }
@@ -378,18 +405,32 @@ func (wp *WorkerPool) scaleDown(workersToRemove int) error {
 
 // UpdateRateLimit changes the QPS target
 func (wp *WorkerPool) UpdateRateLimit(newQPS int) {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+
 	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
 	wp.config.TargetQPS = newQPS
+
+	slog.Info("Rate limit updated",
+		"new_qps", newQPS)
 }
 
 // GetWorkerStatus returns current worker status
 func (wp *WorkerPool) GetWorkerStatus() WorkerStatus {
+	wp.mu.RLock()
+	defer wp.mu.RUnlock()
+
+	readWorkers := len(wp.readers)
+	writeWorkers := len(wp.writers)
+	targetQPS := wp.config.TargetQPS
+	isRunning := wp.ctx.Err() == nil
+
 	return WorkerStatus{
-		ReadWorkers:  len(wp.readers),
-		WriteWorkers: len(wp.writers),
-		TotalWorkers: len(wp.readers) + len(wp.writers),
-		TargetQPS:    wp.config.TargetQPS,
-		IsRunning:    wp.ctx.Err() == nil,
+		ReadWorkers:  readWorkers,
+		WriteWorkers: writeWorkers,
+		TotalWorkers: readWorkers + writeWorkers,
+		TargetQPS:    targetQPS,
+		IsRunning:    isRunning,
 	}
 }
 

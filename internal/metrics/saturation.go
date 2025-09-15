@@ -174,14 +174,14 @@ func (sc *SaturationController) checkAndAdjust(ctx context.Context) error {
 	return nil
 }
 
-// calculateScaleUpAdjustment determines how to increase workload
+// calculateScaleUpAdjustment determines how to increase workload (QPS only)
 func (sc *SaturationController) calculateScaleUpAdjustment(currentCPU float64) WorkloadAdjustment {
 	deficit := sc.targetCPU - currentCPU
 	magnitude := (deficit / sc.targetCPU) * 100 // Convert to percentage
 
 	// Conservative scaling: Cap the adjustment to prevent overshooting
-	if magnitude > 8 {
-		magnitude = 8 // Reduced from 20% to 8% maximum
+	if magnitude > 10 {
+		magnitude = 10 // Increased max since we're not adding workers
 	}
 
 	// Minimum meaningful adjustment
@@ -189,29 +189,25 @@ func (sc *SaturationController) calculateScaleUpAdjustment(currentCPU float64) W
 		magnitude = 2
 	}
 
-	adjustmentType := "qps_increase"
-	if magnitude > 6 { // Reduced threshold from 15% to 6%
-		adjustmentType = "scale_up" // Add more workers for larger adjustments
-	}
-
+	// Always use QPS increase, never change worker count
 	return WorkloadAdjustment{
-		Type:       adjustmentType,
+		Type:       "qps_increase",
 		Magnitude:  magnitude,
-		Reason:     fmt.Sprintf("CPU %.1f%% below target %.1f%%", currentCPU, sc.targetCPU),
+		Reason:     fmt.Sprintf("CPU %.1f%% below target %.1f%% (QPS-only scaling)", currentCPU, sc.targetCPU),
 		CurrentCPU: currentCPU,
 		TargetCPU:  sc.targetCPU,
 		Timestamp:  time.Now(),
 	}
 }
 
-// calculateScaleDownAdjustment determines how to decrease workload
+// calculateScaleDownAdjustment determines how to decrease workload (QPS only)
 func (sc *SaturationController) calculateScaleDownAdjustment(currentCPU float64) WorkloadAdjustment {
 	excess := currentCPU - sc.targetCPU
 	magnitude := (excess / sc.targetCPU) * 100 // Convert to percentage
 
 	// Conservative scaling: Cap the adjustment
-	if magnitude > 5 { // Reduced from 15% to 5% maximum
-		magnitude = 5
+	if magnitude > 8 { // Increased max since we're not removing workers
+		magnitude = 8
 	}
 
 	// Minimum meaningful adjustment
@@ -219,15 +215,11 @@ func (sc *SaturationController) calculateScaleDownAdjustment(currentCPU float64)
 		magnitude = 1
 	}
 
-	adjustmentType := "qps_decrease"
-	if magnitude > 3 { // Reduced threshold from 10% to 3%
-		adjustmentType = "scale_down" // Remove workers for larger adjustments
-	}
-
+	// Always use QPS decrease, never change worker count
 	return WorkloadAdjustment{
-		Type:       adjustmentType,
+		Type:       "qps_decrease",
 		Magnitude:  magnitude,
-		Reason:     fmt.Sprintf("CPU %.1f%% above target %.1f%%", currentCPU, sc.targetCPU),
+		Reason:     fmt.Sprintf("CPU %.1f%% above target %.1f%% (QPS-only scaling)", currentCPU, sc.targetCPU),
 		CurrentCPU: currentCPU,
 		TargetCPU:  sc.targetCPU,
 		Timestamp:  time.Now(),
