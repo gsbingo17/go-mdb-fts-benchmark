@@ -12,10 +12,11 @@ import (
 
 // SaturationController manages CPU saturation and workload adjustment
 type SaturationController struct {
-	monitor         DatabaseMonitor
-	targetCPU       float64
-	stabilityWindow time.Duration
-	adjustmentStep  float64
+	monitor            DatabaseMonitor
+	targetCPU          float64
+	stabilityWindow    time.Duration
+	adjustmentCooldown time.Duration
+	adjustmentStep     float64
 
 	// Internal state
 	mu                 sync.RWMutex
@@ -23,6 +24,7 @@ type SaturationController struct {
 	cpuHistory         []CPUReading
 	isStable           bool
 	stabilityStart     time.Time
+	lastAdjustment     time.Time
 	adjustmentCallback func(adjustment WorkloadAdjustment)
 }
 
@@ -48,10 +50,17 @@ func NewSaturationController(
 	cfg config.WorkloadConfig,
 	adjustmentCallback func(WorkloadAdjustment),
 ) *SaturationController {
+	// Default adjustment cooldown if not specified
+	cooldown := cfg.AdjustmentCooldown
+	if cooldown == 0 {
+		cooldown = 3 * time.Minute // Default 3 minutes
+	}
+
 	return &SaturationController{
 		monitor:            monitor,
 		targetCPU:          cfg.SaturationTarget,
 		stabilityWindow:    cfg.StabilityWindow,
+		adjustmentCooldown: cooldown,
 		adjustmentStep:     5.0, // 5% adjustment steps
 		cpuHistory:         make([]CPUReading, 0, 100),
 		adjustmentCallback: adjustmentCallback,
@@ -60,12 +69,13 @@ func NewSaturationController(
 
 // Start begins monitoring and adjustment loop
 func (sc *SaturationController) Start(ctx context.Context) {
-	ticker := time.NewTicker(30 * time.Second) // Check every 30 seconds
+	ticker := time.NewTicker(60 * time.Second) // Check every 60 seconds (increased from 30s)
 	defer ticker.Stop()
 
 	slog.Info("Starting saturation controller",
 		"target_cpu", sc.targetCPU,
-		"stability_window", sc.stabilityWindow)
+		"stability_window", sc.stabilityWindow,
+		"adjustment_cooldown", sc.adjustmentCooldown)
 
 	for {
 		select {
@@ -114,18 +124,36 @@ func (sc *SaturationController) checkAndAdjust(ctx context.Context) error {
 		"target_cpu", sc.targetCPU,
 		"history_points", len(sc.cpuHistory))
 
-	// Check if we need adjustment
+	// Check if we need adjustment (with cooldown protection)
 	tolerance := 5.0 // 5% tolerance
+	timeSinceLastAdjustment := time.Since(sc.lastAdjustment)
+
 	if cpu < sc.targetCPU-tolerance {
-		// CPU too low - scale up workload
-		adjustment := sc.calculateScaleUpAdjustment(cpu)
-		sc.executeAdjustment(adjustment)
-		sc.resetStability()
+		// CPU too low - scale up workload (if cooldown allows)
+		if sc.canAdjust() {
+			adjustment := sc.calculateScaleUpAdjustment(cpu)
+			sc.executeAdjustment(adjustment)
+			sc.resetStability()
+		} else {
+			slog.Debug("Scale-up needed but in cooldown period",
+				"current_cpu", cpu,
+				"target_cpu", sc.targetCPU,
+				"time_since_last_adjustment", timeSinceLastAdjustment,
+				"cooldown_remaining", sc.adjustmentCooldown-timeSinceLastAdjustment)
+		}
 	} else if cpu > sc.targetCPU+tolerance {
-		// CPU too high - scale down workload
-		adjustment := sc.calculateScaleDownAdjustment(cpu)
-		sc.executeAdjustment(adjustment)
-		sc.resetStability()
+		// CPU too high - scale down workload (if cooldown allows)
+		if sc.canAdjust() {
+			adjustment := sc.calculateScaleDownAdjustment(cpu)
+			sc.executeAdjustment(adjustment)
+			sc.resetStability()
+		} else {
+			slog.Debug("Scale-down needed but in cooldown period",
+				"current_cpu", cpu,
+				"target_cpu", sc.targetCPU,
+				"time_since_last_adjustment", timeSinceLastAdjustment,
+				"cooldown_remaining", sc.adjustmentCooldown-timeSinceLastAdjustment)
+		}
 	} else {
 		// CPU in target range - check stability
 		sc.checkStability()
@@ -184,12 +212,24 @@ func (sc *SaturationController) calculateScaleDownAdjustment(currentCPU float64)
 	}
 }
 
+// canAdjust checks if enough time has passed since the last adjustment
+func (sc *SaturationController) canAdjust() bool {
+	if sc.lastAdjustment.IsZero() {
+		return true // No previous adjustment
+	}
+	return time.Since(sc.lastAdjustment) >= sc.adjustmentCooldown
+}
+
 // executeAdjustment sends the adjustment to the callback
 func (sc *SaturationController) executeAdjustment(adjustment WorkloadAdjustment) {
 	slog.Info("Executing workload adjustment",
 		"type", adjustment.Type,
 		"magnitude", adjustment.Magnitude,
-		"reason", adjustment.Reason)
+		"reason", adjustment.Reason,
+		"time_since_last_adjustment", time.Since(sc.lastAdjustment))
+
+	// Update last adjustment time
+	sc.lastAdjustment = time.Now()
 
 	if sc.adjustmentCallback != nil {
 		sc.adjustmentCallback(adjustment)

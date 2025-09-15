@@ -25,15 +25,16 @@ type DatabaseConfig struct {
 
 // WorkloadConfig defines the benchmark workload parameters
 type WorkloadConfig struct {
-	ReadWriteRatio   ReadWriteRatio `yaml:"read_write_ratio"`
-	Duration         time.Duration  `yaml:"duration"`
-	TargetQPS        int            `yaml:"target_qps"`
-	WorkerCount      int            `yaml:"worker_count"`
-	DatasetSize      int            `yaml:"dataset_size"`
-	SaturationTarget float64        `yaml:"saturation_target"` // CPU %
-	WarmupDuration   time.Duration  `yaml:"warmup_duration"`
-	StabilityWindow  time.Duration  `yaml:"stability_window"`
-	QueryResultLimit int            `yaml:"query_result_limit"` // Limit on text search results
+	ReadWriteRatio     ReadWriteRatio `yaml:"read_write_ratio"`
+	Duration           time.Duration  `yaml:"duration"`
+	TargetQPS          int            `yaml:"target_qps"`
+	WorkerCount        int            `yaml:"worker_count"`
+	DatasetSize        int            `yaml:"dataset_size"`
+	SaturationTarget   float64        `yaml:"saturation_target"` // CPU %
+	WarmupDuration     time.Duration  `yaml:"warmup_duration"`
+	StabilityWindow    time.Duration  `yaml:"stability_window"`
+	AdjustmentCooldown time.Duration  `yaml:"adjustment_cooldown"` // Time to wait between adjustments
+	QueryResultLimit   int            `yaml:"query_result_limit"`  // Limit on text search results
 }
 
 // ReadWriteRatio defines the ratio of read vs write operations
