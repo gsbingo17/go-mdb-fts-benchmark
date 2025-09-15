@@ -86,41 +86,20 @@ func NewAtlasMonitor(cfg mongoConfig.AtlasCostConfig) (*AtlasMonitor, error) {
 	return atlas, nil
 }
 
-// GetCPUUtilization retrieves comprehensive CPU utilization from Atlas
-// Calculates total CPU usage by combining all system-level normalized CPU metrics
+// GetCPUUtilization retrieves normalized system CPU user utilization from Atlas
+// Uses only SYSTEM_NORMALIZED_CPU_USER metric for simplified and direct measurement
 func (am *AtlasMonitor) GetCPUUtilization(ctx context.Context) (float64, error) {
-	// Collect all system-level normalized CPU metrics
-	cpuMetrics := map[string]string{
-		"user":    "SYSTEM_NORMALIZED_CPU_USER",    // User space CPU usage
-		"kernel":  "SYSTEM_NORMALIZED_CPU_KERNEL",  // Kernel space CPU usage
-		"guest":   "SYSTEM_NORMALIZED_CPU_GUEST",   // Guest VM CPU usage
-		"iowait":  "SYSTEM_NORMALIZED_CPU_IOWAIT",  // I/O wait CPU usage
-		"irq":     "SYSTEM_NORMALIZED_CPU_IRQ",     // Hardware interrupt CPU usage
-		"softirq": "SYSTEM_NORMALIZED_CPU_SOFTIRQ", // Software interrupt CPU usage
+	// Use only normalized system CPU user metric
+	cpuUser, err := am.getMetric(ctx, "SYSTEM_NORMALIZED_CPU_USER", "PT1M")
+
+	if err == nil && cpuUser >= 0 {
+		fmt.Printf("INFO: System normalized CPU user: %.2f%%\n", cpuUser)
+		return cpuUser, nil
 	}
 
-	totalCPU := 0.0
-	successfulMetrics := make(map[string]float64)
+	fmt.Printf("DEBUG: Failed to get SYSTEM_NORMALIZED_CPU_USER: %v\n", err)
 
-	// Collect each CPU metric component
-	for component, metricName := range cpuMetrics {
-		if value, err := am.getMetric(ctx, metricName, "PT1M"); err == nil && value >= 0 {
-			successfulMetrics[component] = value
-			totalCPU += value
-			fmt.Printf("DEBUG: CPU %s: %.2f%%\n", component, value)
-		} else {
-			fmt.Printf("DEBUG: Failed to get CPU %s (%s): %v\n", component, metricName, err)
-		}
-	}
-
-	// If we got at least some metrics, use the total
-	if len(successfulMetrics) > 0 {
-		fmt.Printf("INFO: Total CPU utilization: %.2f%% (from %d components: %v)\n",
-			totalCPU, len(successfulMetrics), getKeys(successfulMetrics))
-		return totalCPU, nil
-	}
-
-	// Fallback to single metric approach if comprehensive collection fails
+	// Fallback to single metric approach if primary metric fails
 	return am.getFallbackCPUMetric(ctx)
 }
 
