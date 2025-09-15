@@ -179,14 +179,19 @@ func (sc *SaturationController) calculateScaleUpAdjustment(currentCPU float64) W
 	deficit := sc.targetCPU - currentCPU
 	magnitude := (deficit / sc.targetCPU) * 100 // Convert to percentage
 
-	// Cap the adjustment to prevent overshooting
-	if magnitude > 20 {
-		magnitude = 20
+	// Conservative scaling: Cap the adjustment to prevent overshooting
+	if magnitude > 8 {
+		magnitude = 8 // Reduced from 20% to 8% maximum
+	}
+
+	// Minimum meaningful adjustment
+	if magnitude < 2 {
+		magnitude = 2
 	}
 
 	adjustmentType := "qps_increase"
-	if magnitude > 15 {
-		adjustmentType = "scale_up" // Add more workers for large adjustments
+	if magnitude > 6 { // Reduced threshold from 15% to 6%
+		adjustmentType = "scale_up" // Add more workers for larger adjustments
 	}
 
 	return WorkloadAdjustment{
@@ -204,14 +209,19 @@ func (sc *SaturationController) calculateScaleDownAdjustment(currentCPU float64)
 	excess := currentCPU - sc.targetCPU
 	magnitude := (excess / sc.targetCPU) * 100 // Convert to percentage
 
-	// Cap the adjustment
-	if magnitude > 15 {
-		magnitude = 15
+	// Conservative scaling: Cap the adjustment
+	if magnitude > 5 { // Reduced from 15% to 5% maximum
+		magnitude = 5
+	}
+
+	// Minimum meaningful adjustment
+	if magnitude < 1 {
+		magnitude = 1
 	}
 
 	adjustmentType := "qps_decrease"
-	if magnitude > 10 {
-		adjustmentType = "scale_down" // Remove workers for large adjustments
+	if magnitude > 3 { // Reduced threshold from 10% to 3%
+		adjustmentType = "scale_down" // Remove workers for larger adjustments
 	}
 
 	return WorkloadAdjustment{
