@@ -408,11 +408,24 @@ func (wp *WorkerPool) UpdateRateLimit(newQPS int) {
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 
-	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
+	// Create new rate limiter
+	newRateLimiter := rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
+	wp.rateLimiter = newRateLimiter
 	wp.config.TargetQPS = newQPS
 
+	// Update all existing workers to use the new rate limiter
+	for _, reader := range wp.readers {
+		reader.rateLimiter = newRateLimiter
+	}
+
+	for _, writer := range wp.writers {
+		writer.rateLimiter = newRateLimiter
+	}
+
 	slog.Info("Rate limit updated",
-		"new_qps", newQPS)
+		"new_qps", newQPS,
+		"readers_updated", len(wp.readers),
+		"writers_updated", len(wp.writers))
 }
 
 // GetWorkerStatus returns current worker status
