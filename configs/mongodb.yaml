@@ -1,0 +1,44 @@
+# MongoDB Atlas Configuration
+database:
+  type: "mongodb"
+  uri: "mongodb+srv://test:xxxx@xxx.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+  database: "benchmark"
+  collection: "documents"
+  max_pool_size: 100
+  min_pool_size: 5
+  max_conn_idle_time: 60
+  connect_timeout_ms: 30000   # Increased from 10000 to 30000 (30 seconds)
+  socket_timeout_ms: 120000   # Increased from 30000 to 120000 (2 minutes)
+
+workload:
+  read_write_ratio:
+    read_percent: 80
+    write_percent: 20
+  duration: "20m"           # Longer duration for stable saturation measurement
+  target_qps: 200           # Start higher, will auto-adjust to reach 90% CPU
+  worker_count: 20          # More workers for higher load generation
+  dataset_size: 100000
+  saturation_target: 90.0   # Target 90% CPU saturation
+  warmup_duration: "3m"     # Longer warmup for proper saturation
+  stability_window: "5m"    # Time to maintain stable 90% CPU before measuring
+  query_result_limit: 50    # Limit text search results to improve realism
+
+metrics:
+  collection_interval: "10s"
+  export_interval: "60s"
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 8080
+
+cost:
+  provider: "atlas"
+  currency_code: "USD"
+  calculation_mode: "estimate"
+  atlas:
+    public_key: "xxx"
+    private_key: "xxx"
+    group_id: "xxx"
+    cluster_name: "Cluster0"
+    hourly_cost: 0.10  # M10 cluster cost per hour
+    storage_cost_per_gb: 0

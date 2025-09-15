@@ -1,0 +1,29 @@
+{
+  "performance": {
+    "read_ops": 44,
+    "write_ops": 245,
+    "total_ops": 289,
+    "error_count": 0,
+    "duration": 521496138625,
+    "read_qps": 0.08437262856061095,
+    "write_qps": 0.4698021363034019,
+    "total_qps": 0.5541747648640128,
+    "avg_read_latency_ms": 17453.63348481818,
+    "avg_write_latency_ms": 1458.8298755061223,
+    "error_rate": 0,
+    "timestamp": "2025-09-11T14:47:26.625386+08:00"
+  },
+  "cost": {
+    "total_cost": 0.0830732081937741,
+    "cost_per_read": 0.0002874505473833014,
+    "cost_per_write": 0.0002874505473833014,
+    "hourly_cost": 0.5734722222222222,
+    "storage_cost": 0,
+    "compute_cost": 0,
+    "currency": "USD",
+    "provider": "atlas",
+    "calculation_mode": "realtime",
+    "timestamp": "2025-09-11T14:47:27.603908+08:00"
+  },
+  "export_time": "2025-09-11T14:47:27.607601+08:00"
+}

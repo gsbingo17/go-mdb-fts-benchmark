@@ -1,0 +1,39 @@
+
+Benchmark Summary Report
+========================
+Generated: 2025-09-12 15:47:28
+Duration: 24m24.352543s
+
+Performance Metrics:
+-------------------
+Total Operations: 234740
+Read Operations: 186273 (79.4%)
+Write Operations: 48467 (20.6%)
+Error Count: 5
+Error Rate: 0.00%
+
+QPS Metrics:
+-----------
+Average Read QPS: 127.21
+Average Write QPS: 33.10
+Total QPS: 160.30
+
+Latency Metrics:
+---------------
+Average Read Latency: 167.29 ms
+Average Write Latency: 220.78 ms
+
+Cost Analysis:
+-------------
+Provider: atlas
+Total Cost: $0.042089 USD
+Cost Per Read: $0.00000018
+Cost Per Write: $0.00000018
+Hourly Cost: $0.1035
+Calculation Mode: realtime
+
+Efficiency Metrics:
+------------------
+Operations per Dollar: 5577251
+Reads per Dollar: 5577251
+Writes per Dollar: 5577251

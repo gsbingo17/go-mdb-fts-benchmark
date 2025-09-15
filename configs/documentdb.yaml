@@ -1,0 +1,43 @@
+# AWS DocumentDB Configuration
+database:
+  type: "documentdb"
+  uri: "mongodb://username:password@docdb-cluster.cluster-xyz.us-east-1.docdb.amazonaws.com:27017/"
+  database: "benchmark"
+  collection: "documents"
+  max_pool_size: 100
+  min_pool_size: 5
+  max_conn_idle_time: 60
+  connect_timeout_ms: 10000
+  socket_timeout_ms: 30000
+
+workload:
+  read_write_ratio:
+    read_percent: 80
+    write_percent: 20
+  duration: "30m"
+  target_qps: 100
+  worker_count: 10
+  dataset_size: 100000
+  saturation_target: 80.0
+  warmup_duration: "2m"
+  stability_window: "30m"
+
+metrics:
+  collection_interval: "10s"
+  export_interval: "60s"
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 8080
+
+cost:
+  provider: "documentdb"
+  currency_code: "USD"
+  calculation_mode: "estimate"
+  documentdb:
+    region: "us-east-1"
+    cluster_id: "${DOCDB_CLUSTER_ID}"
+    instance_type: "db.r5.large"
+    hourly_cost: 0.277  # db.r5.large cost per hour
+    storage_cost_per_gb: 0.10
+    io_cost_per_1m_requests: 0.20
