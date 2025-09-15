@@ -32,6 +32,7 @@ type WorkerPool struct {
 	dataGenerator  *generator.DataGenerator
 	workloadGen    *generator.WorkloadGenerator
 	mu             sync.RWMutex
+	started        bool
 }
 
 // NewWorkerPool creates a new worker pool
@@ -65,6 +66,18 @@ func NewWorkerPool(
 
 // Start initializes and starts all workers
 func (wp *WorkerPool) Start() error {
+	wp.mu.Lock()
+	defer wp.mu.Unlock()
+
+	// Prevent double initialization
+	if wp.started {
+		slog.Info("Worker pool already started, skipping duplicate Start() call")
+		return nil
+	}
+
+	wp.started = true
+	slog.Info("Starting worker pool", "total_workers", wp.config.WorkerCount)
+
 	// Calculate worker distribution based on read/write ratio
 	readWorkerCount := int(float64(wp.config.WorkerCount) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
 	writeWorkerCount := wp.config.WorkerCount - readWorkerCount
