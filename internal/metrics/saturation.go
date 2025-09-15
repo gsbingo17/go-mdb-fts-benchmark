@@ -26,6 +26,10 @@ type SaturationController struct {
 	stabilityStart     time.Time
 	lastAdjustment     time.Time
 	adjustmentCallback func(adjustment WorkloadAdjustment)
+
+	// Measurement phase tracking
+	measurementActive   bool
+	measurementCallback func(active bool) // Callback for measurement state changes
 }
 
 // CPUReading represents a CPU utilization reading
@@ -64,7 +68,15 @@ func NewSaturationController(
 		adjustmentStep:     5.0, // 5% adjustment steps
 		cpuHistory:         make([]CPUReading, 0, 100),
 		adjustmentCallback: adjustmentCallback,
+		measurementActive:  false,
 	}
+}
+
+// SetMeasurementCallback sets the callback for measurement state changes
+func (sc *SaturationController) SetMeasurementCallback(callback func(active bool)) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.measurementCallback = callback
 }
 
 // Start begins monitoring and adjustment loop
@@ -238,6 +250,9 @@ func (sc *SaturationController) executeAdjustment(adjustment WorkloadAdjustment)
 
 // checkStability determines if the system is stable at target CPU
 func (sc *SaturationController) checkStability() {
+	previousStableState := sc.isStable
+	stabilityConfirmed := false
+
 	if !sc.isStable {
 		// Check if we can start stability period
 		if sc.isInTargetRange() {
@@ -249,12 +264,37 @@ func (sc *SaturationController) checkStability() {
 		// Check if stability period is complete
 		if time.Since(sc.stabilityStart) >= sc.stabilityWindow {
 			if sc.isStabilityMaintained() {
+				stabilityConfirmed = true
 				slog.Info("Stability achieved",
 					"duration", time.Since(sc.stabilityStart),
 					"cpu", sc.currentCPU)
 			} else {
 				sc.resetStability()
 			}
+		}
+	}
+
+	// Handle measurement state transitions
+	sc.handleMeasurementTransitions(previousStableState, stabilityConfirmed)
+}
+
+// handleMeasurementTransitions manages start/stop of measurement based on stability
+func (sc *SaturationController) handleMeasurementTransitions(previousStable bool, stabilityConfirmed bool) {
+	// Start measurement when stability is confirmed (after stability window)
+	if stabilityConfirmed && !sc.measurementActive {
+		sc.measurementActive = true
+		slog.Info("Saturation stable - starting measurement phase")
+		if sc.measurementCallback != nil {
+			sc.measurementCallback(true)
+		}
+	}
+
+	// Stop measurement if we lose stability
+	if !sc.isStable && sc.measurementActive {
+		sc.measurementActive = false
+		slog.Info("Saturation unstable - stopping measurement phase")
+		if sc.measurementCallback != nil {
+			sc.measurementCallback(false)
 		}
 	}
 }

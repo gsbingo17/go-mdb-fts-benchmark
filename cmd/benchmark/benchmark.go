@@ -24,7 +24,8 @@ type BenchmarkRunner struct {
 	saturationController *metrics.SaturationController
 	costTracker          metrics.RealTimeCostTracker
 
-	startTime time.Time
+	startTime         time.Time
+	measurementActive bool
 }
 
 // NewBenchmarkRunner creates a new benchmark runner
@@ -81,6 +82,8 @@ func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 			cfg.Workload,
 			runner.handleWorkloadAdjustment,
 		)
+		// Set up measurement callback for stability-based metrics reset
+		runner.saturationController.SetMeasurementCallback(runner.handleMeasurementStateChange)
 	}
 
 	return runner, nil
@@ -485,6 +488,20 @@ func (br *BenchmarkRunner) logFinalResults(metrics metrics.Metrics, costMetrics 
 			"target_cpu", fmt.Sprintf("%.1f%%", status.TargetCPU),
 			"achieved_stability", status.IsStable,
 			"stability_duration", status.StabilityDuration)
+	}
+}
+
+// handleMeasurementStateChange handles measurement state changes from saturation controller
+func (br *BenchmarkRunner) handleMeasurementStateChange(active bool) {
+	br.measurementActive = active
+
+	if active {
+		// Saturation has stabilized - reset metrics to start clean measurement
+		slog.Info("Saturation achieved stability - resetting metrics for clean measurement")
+		br.metricsCollector.Reset()
+	} else {
+		// Saturation became unstable - stop clean measurement
+		slog.Info("Saturation lost stability - ending clean measurement phase")
 	}
 }
 

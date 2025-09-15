@@ -1,6 +1,8 @@
 package metrics
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"mongodb-benchmarking-tool/internal/config"
@@ -13,6 +15,7 @@ type Metrics struct {
 	TotalOps        int64         `json:"total_ops"`
 	ErrorCount      int64         `json:"error_count"`
 	Duration        time.Duration `json:"duration"`
+	DurationHuman   string        `json:"duration_human"`
 	ReadQPS         float64       `json:"read_qps"`
 	WriteQPS        float64       `json:"write_qps"`
 	TotalQPS        float64       `json:"total_qps"`
@@ -20,6 +23,20 @@ type Metrics struct {
 	AvgWriteLatency float64       `json:"avg_write_latency_ms"`
 	ErrorRate       float64       `json:"error_rate"`
 	Timestamp       time.Time     `json:"timestamp"`
+}
+
+// MarshalJSON provides custom JSON marshaling for Metrics
+func (m Metrics) MarshalJSON() ([]byte, error) {
+	type Alias Metrics
+	return json.Marshal(&struct {
+		Duration      string `json:"duration"`
+		DurationHuman string `json:"duration_human"`
+		*Alias
+	}{
+		Duration:      formatDuration(m.Duration),
+		DurationHuman: formatDurationHuman(m.Duration),
+		Alias:         (*Alias)(&m),
+	})
 }
 
 // CostMetrics represents cost calculation results
@@ -35,6 +52,59 @@ type CostMetrics struct {
 	Provider        string    `json:"provider"`
 	CalculationMode string    `json:"calculation_mode"`
 	Timestamp       time.Time `json:"timestamp"`
+}
+
+// MarshalJSON provides custom JSON marshaling for CostMetrics
+func (c CostMetrics) MarshalJSON() ([]byte, error) {
+	type Alias CostMetrics
+	return json.Marshal(&struct {
+		CostPerRead  string `json:"cost_per_read"`
+		CostPerWrite string `json:"cost_per_write"`
+		*Alias
+	}{
+		CostPerRead:  formatCost(c.CostPerRead),
+		CostPerWrite: formatCost(c.CostPerWrite),
+		Alias:        (*Alias)(&c),
+	})
+}
+
+// formatDuration formats a duration as seconds with 1 decimal place
+func formatDuration(d time.Duration) string {
+	return fmt.Sprintf("%.1fs", d.Seconds())
+}
+
+// formatDurationHuman formats a duration in human-readable format
+func formatDurationHuman(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+
+	minutes := int(d.Minutes())
+	seconds := int(d.Seconds()) % 60
+
+	if minutes < 60 {
+		return fmt.Sprintf("%dm %ds", minutes, seconds)
+	}
+
+	hours := minutes / 60
+	minutes = minutes % 60
+
+	return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+}
+
+// formatCost formats cost values with appropriate precision
+func formatCost(cost float64) string {
+	if cost == 0 {
+		return "0.000000"
+	}
+	if cost >= 0.001 {
+		return fmt.Sprintf("%.6f", cost)
+	}
+	if cost >= 0.000001 {
+		return fmt.Sprintf("%.8f", cost)
+	}
+	// Use scientific notation for very small values
+	return fmt.Sprintf("%.2e", cost)
 }
 
 // SystemState represents the current saturation controller state
@@ -54,6 +124,18 @@ type SystemState struct {
 	ConnectionCount   int64   `json:"connection_count"`
 
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// MarshalJSON provides custom JSON marshaling for SystemState
+func (s SystemState) MarshalJSON() ([]byte, error) {
+	type Alias SystemState
+	return json.Marshal(&struct {
+		StabilityDuration string `json:"stability_duration"`
+		*Alias
+	}{
+		StabilityDuration: formatDurationHuman(s.StabilityDuration),
+		Alias:             (*Alias)(&s),
+	})
 }
 
 // CostCalculator calculates operational costs
