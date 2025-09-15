@@ -79,6 +79,16 @@ func (mc *MetricsCollector) GetCurrentMetrics() Metrics {
 		duration = now.Sub(mc.startTime)
 	}
 
+	return mc.getMetricsWithDuration(duration, now)
+}
+
+// GetMetricsWithCustomDuration returns metrics calculated with a specific duration
+func (mc *MetricsCollector) GetMetricsWithCustomDuration(customDuration time.Duration) Metrics {
+	return mc.getMetricsWithDuration(customDuration, time.Now())
+}
+
+// getMetricsWithDuration is the internal method that calculates metrics with a given duration
+func (mc *MetricsCollector) getMetricsWithDuration(duration time.Duration, timestamp time.Time) Metrics {
 	readOps := mc.readOps.Load()
 	writeOps := mc.writeOps.Load()
 	errors := mc.errorCount.Load()
@@ -93,19 +103,27 @@ func (mc *MetricsCollector) GetCurrentMetrics() Metrics {
 		avgWriteLatency = float64(mc.writeLatencySum.Load()) / float64(writeOps) / 1e6 // convert to ms
 	}
 
+	// Avoid division by zero for very short durations
+	var readQPS, writeQPS, totalQPS float64
+	if duration.Seconds() > 0 {
+		readQPS = float64(readOps) / duration.Seconds()
+		writeQPS = float64(writeOps) / duration.Seconds()
+		totalQPS = float64(readOps+writeOps) / duration.Seconds()
+	}
+
 	return Metrics{
 		ReadOps:         readOps,
 		WriteOps:        writeOps,
 		TotalOps:        readOps + writeOps,
 		ErrorCount:      errors,
 		Duration:        duration,
-		ReadQPS:         float64(readOps) / duration.Seconds(),
-		WriteQPS:        float64(writeOps) / duration.Seconds(),
-		TotalQPS:        float64(readOps+writeOps) / duration.Seconds(),
+		ReadQPS:         readQPS,
+		WriteQPS:        writeQPS,
+		TotalQPS:        totalQPS,
 		AvgReadLatency:  avgReadLatency,
 		AvgWriteLatency: avgWriteLatency,
 		ErrorRate:       float64(errors) / float64(readOps+writeOps),
-		Timestamp:       now,
+		Timestamp:       timestamp,
 	}
 }
 

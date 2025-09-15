@@ -24,8 +24,9 @@ type BenchmarkRunner struct {
 	saturationController *metrics.SaturationController
 	costTracker          metrics.RealTimeCostTracker
 
-	startTime         time.Time
-	measurementActive bool
+	startTime            time.Time
+	measurementStartTime time.Time
+	measurementActive    bool
 }
 
 // NewBenchmarkRunner creates a new benchmark runner
@@ -287,7 +288,24 @@ func (br *BenchmarkRunner) executeBenchmark(ctx context.Context) error {
 
 // logProgress logs current benchmark progress
 func (br *BenchmarkRunner) logProgress() {
-	metrics := br.metricsCollector.GetCurrentMetrics()
+	var metrics metrics.Metrics
+	var elapsedTime time.Duration
+	var phaseInfo string
+
+	if br.measurementActive && !br.measurementStartTime.IsZero() {
+		// In measurement phase - use measurement duration for accurate QPS calculation
+		elapsedTime = time.Since(br.measurementStartTime)
+		totalElapsed := time.Since(br.startTime)
+
+		// Get metrics with measurement duration for accurate QPS
+		metrics = br.metricsCollector.GetMetricsWithCustomDuration(elapsedTime)
+		phaseInfo = fmt.Sprintf("measurement=%v total=%v", elapsedTime, totalElapsed)
+	} else {
+		// In ramp-up phase - use default duration calculation
+		metrics = br.metricsCollector.GetCurrentMetrics()
+		elapsedTime = metrics.Duration
+		phaseInfo = fmt.Sprintf("total=%v", elapsedTime)
+	}
 
 	var saturationStatus string
 	if br.saturationController != nil {
@@ -297,7 +315,7 @@ func (br *BenchmarkRunner) logProgress() {
 	}
 
 	slog.Info("Benchmark progress",
-		"elapsed", metrics.Duration,
+		"elapsed", phaseInfo,
 		"total_ops", metrics.TotalOps,
 		"read_qps", fmt.Sprintf("%.1f", metrics.ReadQPS),
 		"write_qps", fmt.Sprintf("%.1f", metrics.WriteQPS),
@@ -497,11 +515,13 @@ func (br *BenchmarkRunner) handleMeasurementStateChange(active bool) {
 
 	if active {
 		// Saturation has stabilized - reset metrics to start clean measurement
-		slog.Info("Saturation achieved stability - resetting metrics for clean measurement")
+		br.measurementStartTime = time.Now()
+		slog.Info("Saturation achieved stability - starting measurement phase")
 		br.metricsCollector.Reset()
 	} else {
 		// Saturation became unstable - stop clean measurement
-		slog.Info("Saturation lost stability - ending clean measurement phase")
+		slog.Info("Saturation lost stability - ending measurement phase")
+		br.measurementStartTime = time.Time{} // Reset measurement start time
 	}
 }
 
