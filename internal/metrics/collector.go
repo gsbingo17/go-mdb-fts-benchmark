@@ -69,7 +69,15 @@ func (mc *MetricsCollector) RecordWrite(latency time.Duration, success bool) {
 // GetCurrentMetrics returns current metrics snapshot
 func (mc *MetricsCollector) GetCurrentMetrics() Metrics {
 	now := time.Now()
-	duration := now.Sub(mc.startTime)
+
+	// Use reset time if available, otherwise use start time
+	lastReset := mc.lastResetTime.Load().(time.Time)
+	var duration time.Duration
+	if !lastReset.IsZero() {
+		duration = now.Sub(lastReset)
+	} else {
+		duration = now.Sub(mc.startTime)
+	}
 
 	readOps := mc.readOps.Load()
 	writeOps := mc.writeOps.Load()
