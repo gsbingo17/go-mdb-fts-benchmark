@@ -8,6 +8,58 @@ import (
 	"mongodb-benchmarking-tool/internal/config"
 )
 
+// BenchmarkPhase represents the current phase of the benchmark
+type BenchmarkPhase string
+
+const (
+	PhaseRampup        BenchmarkPhase = "rampup"
+	PhaseStabilization BenchmarkPhase = "stabilization"
+	PhaseMeasurement   BenchmarkPhase = "measurement"
+)
+
+// PhaseMetadata contains detailed information about the current benchmark phase
+type PhaseMetadata struct {
+	CurrentPhase BenchmarkPhase `json:"current_phase"`
+
+	// Timing information
+	BenchmarkStartTime     *time.Time `json:"benchmark_start_time,omitempty"`
+	MeasurementStartTime   *time.Time `json:"measurement_start_time,omitempty"`
+	TotalBenchmarkDuration string     `json:"total_benchmark_duration,omitempty"`
+	MeasurementDuration    string     `json:"measurement_duration,omitempty"`
+
+	// Phase-specific details
+	RampupMetadata        *RampupMetadata        `json:"rampup_metadata,omitempty"`
+	StabilizationMetadata *StabilizationMetadata `json:"stabilization_metadata,omitempty"`
+	MeasurementMetadata   *MeasurementMetadata   `json:"measurement_metadata,omitempty"`
+}
+
+// RampupMetadata contains information about the ramp-up phase
+type RampupMetadata struct {
+	TargetCPU          float64 `json:"target_cpu"`
+	CurrentCPU         float64 `json:"current_cpu"`
+	LastAdjustmentType string  `json:"last_adjustment_type,omitempty"`
+	AdjustmentReason   string  `json:"adjustment_reason,omitempty"`
+}
+
+// StabilizationMetadata contains information about the stabilization phase
+type StabilizationMetadata struct {
+	StabilityStartTime        time.Time `json:"stability_start_time"`
+	StabilityElapsed          string    `json:"stability_elapsed"`
+	StabilityRequired         string    `json:"stability_required"`
+	StabilityProgressPct      float64   `json:"stability_progress_percent"`
+	EstimatedMeasurementStart string    `json:"estimated_measurement_start,omitempty"`
+	CPUInTargetRange          bool      `json:"cpu_in_target_range"`
+}
+
+// MeasurementMetadata contains information about the measurement phase
+type MeasurementMetadata struct {
+	MeasurementStartTime time.Time `json:"measurement_start_time"`
+	CleanMetricsActive   bool      `json:"clean_metrics_active"`
+	MetricsResetAt       time.Time `json:"metrics_reset_at"`
+	StabilityConfidence  string    `json:"stability_confidence"`
+	DataQuality          string    `json:"data_quality"`
+}
+
 // Metrics represents a snapshot of performance metrics
 type Metrics struct {
 	ReadOps         int64         `json:"read_ops"`
@@ -90,6 +142,11 @@ func formatDurationHuman(d time.Duration) string {
 	minutes = minutes % 60
 
 	return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+}
+
+// FormatDurationHuman formats a duration in human-readable format (public wrapper)
+func FormatDurationHuman(d time.Duration) string {
+	return formatDurationHuman(d)
 }
 
 // formatCost formats cost values with appropriate precision

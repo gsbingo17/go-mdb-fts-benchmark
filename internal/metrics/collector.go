@@ -111,10 +111,17 @@ func (mc *MetricsCollector) getMetricsWithDuration(duration time.Duration, times
 		totalQPS = float64(readOps+writeOps) / duration.Seconds()
 	}
 
+	// Calculate error rate safely (avoid division by zero)
+	var errorRate float64
+	totalOps := readOps + writeOps
+	if totalOps > 0 {
+		errorRate = float64(errors) / float64(totalOps)
+	}
+
 	return Metrics{
 		ReadOps:         readOps,
 		WriteOps:        writeOps,
-		TotalOps:        readOps + writeOps,
+		TotalOps:        totalOps,
 		ErrorCount:      errors,
 		Duration:        duration,
 		ReadQPS:         readQPS,
@@ -122,7 +129,7 @@ func (mc *MetricsCollector) getMetricsWithDuration(duration time.Duration, times
 		TotalQPS:        totalQPS,
 		AvgReadLatency:  avgReadLatency,
 		AvgWriteLatency: avgWriteLatency,
-		ErrorRate:       float64(errors) / float64(readOps+writeOps),
+		ErrorRate:       errorRate,
 		Timestamp:       timestamp,
 	}
 }

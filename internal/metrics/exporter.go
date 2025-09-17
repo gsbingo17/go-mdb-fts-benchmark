@@ -24,8 +24,8 @@ func NewExporter(outputPath, format string) *Exporter {
 	}
 }
 
-// ExportMetrics exports performance and cost metrics with system state
-func (e *Exporter) ExportMetrics(metrics Metrics, costMetrics CostMetrics, systemState SystemState) error {
+// ExportMetrics exports performance and cost metrics with system state and phase metadata
+func (e *Exporter) ExportMetrics(metrics Metrics, costMetrics CostMetrics, systemState SystemState, phaseMetadata PhaseMetadata) error {
 	// Ensure output directory exists
 	if err := os.MkdirAll(e.outputPath, 0755); err != nil {
 		return fmt.Errorf("failed to create output directory: %w", err)
@@ -33,32 +33,38 @@ func (e *Exporter) ExportMetrics(metrics Metrics, costMetrics CostMetrics, syste
 
 	switch e.format {
 	case "json":
-		return e.exportJSON(metrics, costMetrics, systemState)
+		return e.exportJSON(metrics, costMetrics, systemState, phaseMetadata)
 	case "csv":
-		return e.exportCSV(metrics, costMetrics, systemState)
+		return e.exportCSV(metrics, costMetrics, systemState, phaseMetadata)
 	case "prometheus":
-		return e.exportPrometheus(metrics, costMetrics, systemState)
+		return e.exportPrometheus(metrics, costMetrics, systemState, phaseMetadata)
 	default:
 		return fmt.Errorf("unsupported export format: %s", e.format)
 	}
 }
 
 // exportJSON exports metrics in JSON format
-func (e *Exporter) exportJSON(metrics Metrics, costMetrics CostMetrics, systemState SystemState) error {
+func (e *Exporter) exportJSON(metrics Metrics, costMetrics CostMetrics, systemState SystemState, phaseMetadata PhaseMetadata) error {
 	data := struct {
-		Performance Metrics     `json:"performance"`
-		Cost        CostMetrics `json:"cost"`
-		SystemState SystemState `json:"system_state"`
-		ExportTime  time.Time   `json:"export_time"`
+		BenchmarkPhase string        `json:"benchmark_phase"`
+		PhaseMetadata  PhaseMetadata `json:"phase_metadata"`
+		Performance    Metrics       `json:"performance"`
+		Cost           CostMetrics   `json:"cost"`
+		SystemState    SystemState   `json:"system_state"`
+		ExportTime     time.Time     `json:"export_time"`
 	}{
-		Performance: metrics,
-		Cost:        costMetrics,
-		SystemState: systemState,
-		ExportTime:  time.Now(),
+		BenchmarkPhase: string(phaseMetadata.CurrentPhase),
+		PhaseMetadata:  phaseMetadata,
+		Performance:    metrics,
+		Cost:           costMetrics,
+		SystemState:    systemState,
+		ExportTime:     time.Now(),
 	}
 
-	filename := filepath.Join(e.outputPath, fmt.Sprintf("metrics_%s.json",
-		time.Now().Format("2006-01-02_15-04-05")))
+	// Create phase-specific filename for easier identification
+	phasePrefix := string(phaseMetadata.CurrentPhase)
+	filename := filepath.Join(e.outputPath, fmt.Sprintf("metrics_%s_%s.json",
+		phasePrefix, time.Now().Format("2006-01-02_15-04-05")))
 
 	file, err := os.Create(filename)
 	if err != nil {
@@ -76,7 +82,7 @@ func (e *Exporter) exportJSON(metrics Metrics, costMetrics CostMetrics, systemSt
 }
 
 // exportCSV exports metrics in CSV format
-func (e *Exporter) exportCSV(metrics Metrics, costMetrics CostMetrics, systemState SystemState) error {
+func (e *Exporter) exportCSV(metrics Metrics, costMetrics CostMetrics, systemState SystemState, phaseMetadata PhaseMetadata) error {
 	filename := filepath.Join(e.outputPath, "metrics.csv")
 
 	// Check if file exists to determine if we need headers
@@ -143,7 +149,7 @@ func (e *Exporter) exportCSV(metrics Metrics, costMetrics CostMetrics, systemSta
 }
 
 // exportPrometheus exports metrics in Prometheus format
-func (e *Exporter) exportPrometheus(metrics Metrics, costMetrics CostMetrics, systemState SystemState) error {
+func (e *Exporter) exportPrometheus(metrics Metrics, costMetrics CostMetrics, systemState SystemState, phaseMetadata PhaseMetadata) error {
 	filename := filepath.Join(e.outputPath, "metrics.prom")
 
 	file, err := os.Create(filename)

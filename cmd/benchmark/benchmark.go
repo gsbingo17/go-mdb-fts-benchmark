@@ -340,11 +340,22 @@ func (br *BenchmarkRunner) metricsExportLoop(ctx context.Context) {
 
 // exportCurrentMetrics exports current metrics
 func (br *BenchmarkRunner) exportCurrentMetrics() {
-	metrics := br.metricsCollector.GetCurrentMetrics()
+	// Use consistent duration calculation logic with logProgress()
+	var metrics metrics.Metrics
+	if br.measurementActive && !br.measurementStartTime.IsZero() {
+		// In measurement phase - use measurement duration for accurate QPS calculation
+		elapsedTime := time.Since(br.measurementStartTime)
+		metrics = br.metricsCollector.GetMetricsWithCustomDuration(elapsedTime)
+	} else {
+		// In ramp-up or stabilization phase - use default duration calculation
+		metrics = br.metricsCollector.GetCurrentMetrics()
+	}
+
 	costMetrics := br.calculateCurrentCost(metrics)
 	systemState := br.getCurrentSystemState()
+	phaseMetadata := br.getCurrentPhaseMetadata()
 
-	if err := br.exporter.ExportMetrics(metrics, costMetrics, systemState); err != nil {
+	if err := br.exporter.ExportMetrics(metrics, costMetrics, systemState, phaseMetadata); err != nil {
 		slog.Error("Failed to export metrics", "error", err)
 	}
 }
@@ -368,6 +379,107 @@ func (br *BenchmarkRunner) calculateCurrentCost(m metrics.Metrics) metrics.CostM
 
 	// Fallback to basic cost calculation
 	return br.costCalculator.CalculateCost(m)
+}
+
+// getCurrentPhaseMetadata determines the current benchmark phase and creates metadata
+func (br *BenchmarkRunner) getCurrentPhaseMetadata() metrics.PhaseMetadata {
+	currentPhase := br.getCurrentPhase()
+
+	metadata := metrics.PhaseMetadata{
+		CurrentPhase:           currentPhase,
+		BenchmarkStartTime:     &br.startTime,
+		TotalBenchmarkDuration: metrics.FormatDurationHuman(time.Since(br.startTime)),
+	}
+
+	if br.saturationController != nil {
+		status := br.saturationController.GetStatus()
+
+		switch currentPhase {
+		case metrics.PhaseRampup:
+			metadata.RampupMetadata = &metrics.RampupMetadata{
+				TargetCPU:          status.TargetCPU,
+				CurrentCPU:         status.CurrentCPU,
+				LastAdjustmentType: "qps_adjustment",
+				AdjustmentReason:   fmt.Sprintf("CPU %.1f%% targeting %.1f%%", status.CurrentCPU, status.TargetCPU),
+			}
+
+		case metrics.PhaseStabilization:
+			// Calculate stability progress and estimated completion time
+			stabilityRequired := br.config.Workload.StabilityWindow
+			stabilityElapsed := status.StabilityDuration
+			progressPct := (float64(stabilityElapsed) / float64(stabilityRequired)) * 100
+			if progressPct > 100 {
+				progressPct = 100
+			}
+
+			estimatedCompletion := ""
+			if progressPct < 100 {
+				remaining := stabilityRequired - stabilityElapsed
+				estimatedCompletion = time.Now().Add(remaining).Format("15:04:05")
+			}
+
+			metadata.StabilizationMetadata = &metrics.StabilizationMetadata{
+				StabilityStartTime:        time.Now().Add(-stabilityElapsed),
+				StabilityElapsed:          metrics.FormatDurationHuman(stabilityElapsed),
+				StabilityRequired:         metrics.FormatDurationHuman(stabilityRequired),
+				StabilityProgressPct:      progressPct,
+				EstimatedMeasurementStart: estimatedCompletion,
+				CPUInTargetRange:          status.IsStable,
+			}
+
+		case metrics.PhaseMeasurement:
+			if !br.measurementStartTime.IsZero() {
+				metadata.MeasurementStartTime = &br.measurementStartTime
+				metadata.MeasurementDuration = metrics.FormatDurationHuman(time.Since(br.measurementStartTime))
+			}
+
+			confidence := "low"
+			if status.StabilityDuration > 5*time.Minute {
+				confidence = "high"
+			} else if status.StabilityDuration > 2*time.Minute {
+				confidence = "medium"
+			}
+
+			metadata.MeasurementMetadata = &metrics.MeasurementMetadata{
+				MeasurementStartTime: br.measurementStartTime,
+				CleanMetricsActive:   br.measurementActive,
+				MetricsResetAt:       br.measurementStartTime,
+				StabilityConfidence:  confidence,
+				DataQuality:          "clean_stable_metrics",
+			}
+		}
+	} else {
+		// No saturation controller - assume basic rampup
+		metadata.RampupMetadata = &metrics.RampupMetadata{
+			TargetCPU:          br.config.Workload.SaturationTarget,
+			CurrentCPU:         0.0,
+			LastAdjustmentType: "manual",
+			AdjustmentReason:   "saturation controller disabled",
+		}
+	}
+
+	return metadata
+}
+
+// getCurrentPhase determines the current benchmark phase
+func (br *BenchmarkRunner) getCurrentPhase() metrics.BenchmarkPhase {
+	if br.saturationController != nil {
+		status := br.saturationController.GetStatus()
+
+		if !status.IsStable {
+			return metrics.PhaseRampup
+		}
+
+		if br.measurementActive {
+			return metrics.PhaseMeasurement
+		}
+
+		// CPU stable but measurement not started = stabilization
+		return metrics.PhaseStabilization
+	}
+
+	// No saturation controller
+	return metrics.PhaseRampup
 }
 
 // getCurrentSystemState retrieves current system state from saturation controller
@@ -511,17 +623,18 @@ func (br *BenchmarkRunner) logFinalResults(metrics metrics.Metrics, costMetrics 
 
 // handleMeasurementStateChange handles measurement state changes from saturation controller
 func (br *BenchmarkRunner) handleMeasurementStateChange(active bool) {
-	br.measurementActive = active
-
 	if active {
 		// Saturation has stabilized - reset metrics to start clean measurement
-		br.measurementStartTime = time.Now()
+		// Order is critical: Reset first, then set time, then set flag for atomic transition
+		br.metricsCollector.Reset()          // ← Reset counters first
+		br.measurementStartTime = time.Now() // ← Set measurement start time
+		br.measurementActive = active        // ← Finally activate measurement flag
 		slog.Info("Saturation achieved stability - starting measurement phase")
-		br.metricsCollector.Reset()
 	} else {
 		// Saturation became unstable - stop clean measurement
+		br.measurementActive = active         // ← Deactivate measurement flag first
+		br.measurementStartTime = time.Time{} // ← Reset measurement start time
 		slog.Info("Saturation lost stability - ending measurement phase")
-		br.measurementStartTime = time.Time{} // Reset measurement start time
 	}
 }
 
