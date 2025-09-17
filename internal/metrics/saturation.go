@@ -255,23 +255,62 @@ func (sc *SaturationController) checkStability() {
 	previousStableState := sc.isStable
 	stabilityConfirmed := false
 
+	// Add comprehensive debug logging
+	stabilityDuration := time.Duration(0)
+	if sc.isStable && !sc.stabilityStart.IsZero() {
+		stabilityDuration = time.Since(sc.stabilityStart)
+	}
+
+	slog.Debug("Checking stability",
+		"current_cpu", sc.currentCPU,
+		"target_cpu", sc.targetCPU,
+		"is_stable", sc.isStable,
+		"stability_duration", stabilityDuration,
+		"stability_window", sc.stabilityWindow,
+		"in_target_range", sc.isInTargetRange())
+
 	if !sc.isStable {
 		// Check if we can start stability period
 		if sc.isInTargetRange() {
 			sc.isStable = true
 			sc.stabilityStart = time.Now()
-			slog.Info("Starting stability period", "cpu", sc.currentCPU)
+			slog.Info("Starting stability period",
+				"cpu", sc.currentCPU,
+				"target_cpu", sc.targetCPU,
+				"stability_window", sc.stabilityWindow)
 		}
 	} else {
-		// Check if stability period is complete
-		if time.Since(sc.stabilityStart) >= sc.stabilityWindow {
-			if sc.isStabilityMaintained() {
+		// System is stable, check if stability period is complete
+		if stabilityDuration >= sc.stabilityWindow {
+			// Check if we still maintain stability within the actual stability window
+			if sc.isStabilityMaintainedInWindow() {
 				stabilityConfirmed = true
-				slog.Info("Stability achieved",
-					"duration", time.Since(sc.stabilityStart),
-					"cpu", sc.currentCPU)
+				slog.Info("Stability window completed - stability confirmed",
+					"duration", stabilityDuration,
+					"stability_window", sc.stabilityWindow,
+					"cpu", sc.currentCPU,
+					"target_cpu", sc.targetCPU)
 			} else {
+				slog.Warn("Stability window completed but stability not maintained",
+					"duration", stabilityDuration,
+					"stability_window", sc.stabilityWindow,
+					"cpu", sc.currentCPU,
+					"target_cpu", sc.targetCPU)
 				sc.resetStability()
+			}
+		} else {
+			// Still in stability window, check if we're still in range
+			if !sc.isInTargetRange() {
+				slog.Warn("Lost stability during stability window",
+					"duration", stabilityDuration,
+					"cpu", sc.currentCPU,
+					"target_cpu", sc.targetCPU)
+				sc.resetStability()
+			} else {
+				slog.Debug("Stability window in progress",
+					"duration", stabilityDuration,
+					"remaining", sc.stabilityWindow-stabilityDuration,
+					"cpu", sc.currentCPU)
 			}
 		}
 	}
@@ -308,7 +347,7 @@ func (sc *SaturationController) isInTargetRange() bool {
 		sc.currentCPU <= sc.targetCPU+tolerance
 }
 
-// isStabilityMaintained checks if stability has been maintained
+// isStabilityMaintained checks if stability has been maintained (legacy method)
 func (sc *SaturationController) isStabilityMaintained() bool {
 	if len(sc.cpuHistory) < 5 {
 		return false
@@ -326,6 +365,63 @@ func (sc *SaturationController) isStabilityMaintained() bool {
 	}
 
 	return true
+}
+
+// isStabilityMaintainedInWindow checks if stability has been maintained within the actual stability window
+func (sc *SaturationController) isStabilityMaintainedInWindow() bool {
+	if sc.stabilityStart.IsZero() {
+		return false
+	}
+
+	// Get readings since stability started
+	stabilityStartTime := sc.stabilityStart
+	readingsInWindow := make([]CPUReading, 0)
+
+	for _, reading := range sc.cpuHistory {
+		if reading.Timestamp.After(stabilityStartTime) || reading.Timestamp.Equal(stabilityStartTime) {
+			readingsInWindow = append(readingsInWindow, reading)
+		}
+	}
+
+	// Need at least 3 readings within the stability window
+	if len(readingsInWindow) < 3 {
+		slog.Debug("Insufficient readings in stability window",
+			"readings_count", len(readingsInWindow),
+			"stability_start", stabilityStartTime)
+		return false
+	}
+
+	// Use same tolerance as initial stability check for consistency
+	tolerance := 5.0
+	outOfRangeCount := 0
+
+	for _, reading := range readingsInWindow {
+		if reading.Value < sc.targetCPU-tolerance || reading.Value > sc.targetCPU+tolerance {
+			outOfRangeCount++
+			slog.Debug("Reading outside target range during stability window",
+				"reading_time", reading.Timestamp,
+				"reading_value", reading.Value,
+				"target_cpu", sc.targetCPU,
+				"tolerance", tolerance)
+		}
+	}
+
+	// Allow up to 20% of readings to be outside range to handle brief fluctuations
+	maxOutOfRange := len(readingsInWindow) / 5
+	if maxOutOfRange < 1 {
+		maxOutOfRange = 1
+	}
+
+	isStable := outOfRangeCount <= maxOutOfRange
+
+	slog.Debug("Stability window validation",
+		"total_readings", len(readingsInWindow),
+		"out_of_range_readings", outOfRangeCount,
+		"max_allowed_out_of_range", maxOutOfRange,
+		"is_stable", isStable,
+		"stability_duration", time.Since(stabilityStartTime))
+
+	return isStable
 }
 
 // resetStability resets the stability tracking
