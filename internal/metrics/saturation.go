@@ -347,7 +347,7 @@ func (sc *SaturationController) GetStatus() SaturationStatus {
 		Timestamp:     time.Now(),
 	}
 
-	if sc.isStable {
+	if sc.isStable && !sc.stabilityStart.IsZero() {
 		status.StabilityDuration = time.Since(sc.stabilityStart)
 	}
 

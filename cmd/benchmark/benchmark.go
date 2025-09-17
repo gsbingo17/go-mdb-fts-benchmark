@@ -355,6 +355,9 @@ func (br *BenchmarkRunner) exportCurrentMetrics() {
 	systemState := br.getCurrentSystemState()
 	phaseMetadata := br.getCurrentPhaseMetadata()
 
+	// Validate state consistency before exporting
+	br.validateStateConsistency(systemState, phaseMetadata)
+
 	if err := br.exporter.ExportMetrics(metrics, costMetrics, systemState, phaseMetadata); err != nil {
 		slog.Error("Failed to export metrics", "error", err)
 	}
@@ -383,7 +386,16 @@ func (br *BenchmarkRunner) calculateCurrentCost(m metrics.Metrics) metrics.CostM
 
 // getCurrentPhaseMetadata determines the current benchmark phase and creates metadata
 func (br *BenchmarkRunner) getCurrentPhaseMetadata() metrics.PhaseMetadata {
-	currentPhase := br.getCurrentPhase()
+	// Get status once to ensure consistency between phase detection and metadata
+	var status metrics.SaturationStatus
+	var currentPhase metrics.BenchmarkPhase
+
+	if br.saturationController != nil {
+		status = br.saturationController.GetStatus()
+		currentPhase = br.getCurrentPhaseWithStatus(status)
+	} else {
+		currentPhase = metrics.PhaseRampup
+	}
 
 	metadata := metrics.PhaseMetadata{
 		CurrentPhase:           currentPhase,
@@ -392,7 +404,6 @@ func (br *BenchmarkRunner) getCurrentPhaseMetadata() metrics.PhaseMetadata {
 	}
 
 	if br.saturationController != nil {
-		status := br.saturationController.GetStatus()
 
 		switch currentPhase {
 		case metrics.PhaseRampup:
@@ -465,21 +476,37 @@ func (br *BenchmarkRunner) getCurrentPhaseMetadata() metrics.PhaseMetadata {
 func (br *BenchmarkRunner) getCurrentPhase() metrics.BenchmarkPhase {
 	if br.saturationController != nil {
 		status := br.saturationController.GetStatus()
-
-		if !status.IsStable {
-			return metrics.PhaseRampup
-		}
-
-		if br.measurementActive {
-			return metrics.PhaseMeasurement
-		}
-
-		// CPU stable but measurement not started = stabilization
-		return metrics.PhaseStabilization
+		return br.getCurrentPhaseWithStatus(status)
 	}
 
 	// No saturation controller
+	slog.Debug("Phase: rampup (no saturation controller)")
 	return metrics.PhaseRampup
+}
+
+// getCurrentPhaseWithStatus determines the phase using a provided status to ensure consistency
+func (br *BenchmarkRunner) getCurrentPhaseWithStatus(status metrics.SaturationStatus) metrics.BenchmarkPhase {
+	// Debug logging to trace phase detection logic
+	slog.Debug("Phase detection",
+		"is_stable", status.IsStable,
+		"measurement_active", br.measurementActive,
+		"stability_duration", status.StabilityDuration,
+		"current_cpu", status.CurrentCPU,
+		"target_cpu", status.TargetCPU)
+
+	if !status.IsStable {
+		slog.Debug("Phase: rampup (not stable)")
+		return metrics.PhaseRampup
+	}
+
+	if br.measurementActive {
+		slog.Debug("Phase: measurement (stable + measurement active)")
+		return metrics.PhaseMeasurement
+	}
+
+	// CPU stable but measurement not started = stabilization
+	slog.Debug("Phase: stabilization (stable but measurement not active)")
+	return metrics.PhaseStabilization
 }
 
 // getCurrentSystemState retrieves current system state from saturation controller
@@ -635,6 +662,48 @@ func (br *BenchmarkRunner) handleMeasurementStateChange(active bool) {
 		br.measurementActive = active         // ← Deactivate measurement flag first
 		br.measurementStartTime = time.Time{} // ← Reset measurement start time
 		slog.Info("Saturation lost stability - ending measurement phase")
+	}
+}
+
+// validateStateConsistency checks for inconsistencies between system state and phase metadata
+func (br *BenchmarkRunner) validateStateConsistency(systemState metrics.SystemState, phaseMetadata metrics.PhaseMetadata) {
+	// Check for the specific issue from the log: stable system but rampup phase
+	if systemState.IsStable && systemState.StabilityDuration > time.Minute && phaseMetadata.CurrentPhase == metrics.PhaseRampup {
+		slog.Warn("STATE INCONSISTENCY DETECTED",
+			"issue", "system_stable_but_rampup_phase",
+			"system_stable", systemState.IsStable,
+			"stability_duration", systemState.StabilityDuration,
+			"reported_phase", phaseMetadata.CurrentPhase,
+			"measurement_active", br.measurementActive,
+			"cpu_utilization", systemState.CPUUtilization,
+			"target_cpu", systemState.TargetCPU,
+			"saturation_status", systemState.SaturationStatus)
+	}
+
+	// Check for other potential inconsistencies
+	if systemState.IsStable && phaseMetadata.CurrentPhase == metrics.PhaseRampup && systemState.StabilityDuration > 30*time.Second {
+		slog.Debug("State transition delay detected",
+			"stable_duration", systemState.StabilityDuration,
+			"phase", phaseMetadata.CurrentPhase,
+			"measurement_active", br.measurementActive)
+	}
+
+	// Validate measurement phase consistency
+	if br.measurementActive && phaseMetadata.CurrentPhase != metrics.PhaseMeasurement {
+		slog.Warn("MEASUREMENT STATE INCONSISTENCY",
+			"measurement_active", br.measurementActive,
+			"reported_phase", phaseMetadata.CurrentPhase,
+			"expected_phase", metrics.PhaseMeasurement)
+	}
+
+	// Validate stabilization phase metadata
+	if phaseMetadata.CurrentPhase == metrics.PhaseStabilization && phaseMetadata.StabilizationMetadata != nil {
+		if !phaseMetadata.StabilizationMetadata.CPUInTargetRange {
+			slog.Warn("STABILIZATION INCONSISTENCY",
+				"phase", phaseMetadata.CurrentPhase,
+				"cpu_in_target_range", phaseMetadata.StabilizationMetadata.CPUInTargetRange,
+				"system_stable", systemState.IsStable)
+		}
 	}
 }
 
