@@ -16,24 +16,23 @@ import (
 
 // WorkerPool manages a pool of read and write workers
 type WorkerPool struct {
-	readers          []*ReadWorker
-	writers          []*WriteWorker
-	readerContexts   []context.CancelFunc
-	writerContexts   []context.CancelFunc
-	readerWGs        []*sync.WaitGroup
-	writerWGs        []*sync.WaitGroup
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	readRateLimiter  *rate.Limiter // Separate rate limiter for read operations
-	writeRateLimiter *rate.Limiter // Separate rate limiter for write operations
-	config           config.WorkloadConfig
-	metrics          *metrics.MetricsCollector
-	database         database.Database
-	dataGenerator    *generator.DataGenerator
-	workloadGen      *generator.WorkloadGenerator
-	mu               sync.RWMutex
-	started          bool
+	readers        []*ReadWorker
+	writers        []*WriteWorker
+	readerContexts []context.CancelFunc
+	writerContexts []context.CancelFunc
+	readerWGs      []*sync.WaitGroup
+	writerWGs      []*sync.WaitGroup
+	ctx            context.Context
+	cancel         context.CancelFunc
+	wg             sync.WaitGroup
+	rateLimiter    *rate.Limiter
+	config         config.WorkloadConfig
+	metrics        *metrics.MetricsCollector
+	database       database.Database
+	dataGenerator  *generator.DataGenerator
+	workloadGen    *generator.WorkloadGenerator
+	mu             sync.RWMutex
+	started        bool
 }
 
 // NewWorkerPool creates a new worker pool
@@ -44,40 +43,24 @@ func NewWorkerPool(
 ) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Calculate QPS distribution based on read/write ratio
-	readQPS := int(float64(cfg.TargetQPS) * float64(cfg.ReadWriteRatio.ReadPercent) / 100.0)
-	writeQPS := cfg.TargetQPS - readQPS
-
-	// Ensure minimum QPS for each type
-	if readQPS == 0 && cfg.ReadWriteRatio.ReadPercent > 0 {
-		readQPS = 1
-		writeQPS--
-	}
-	if writeQPS == 0 && cfg.ReadWriteRatio.WritePercent > 0 {
-		writeQPS = 1
-		readQPS--
-	}
-
-	// Create separate rate limiters for read and write operations
-	readRateLimiter := rate.NewLimiter(rate.Limit(readQPS), readQPS/10+1)
-	writeRateLimiter := rate.NewLimiter(rate.Limit(writeQPS), writeQPS/10+1)
+	// Create rate limiter for QPS control
+	rateLimiter := rate.NewLimiter(rate.Limit(cfg.TargetQPS), cfg.TargetQPS/10)
 
 	return &WorkerPool{
-		ctx:              ctx,
-		cancel:           cancel,
-		readRateLimiter:  readRateLimiter,
-		writeRateLimiter: writeRateLimiter,
-		config:           cfg,
-		metrics:          metricsCollector,
-		database:         db,
-		dataGenerator:    generator.NewDataGenerator(time.Now().UnixNano()),
-		workloadGen:      generator.NewWorkloadGenerator(time.Now().UnixNano()),
-		readers:          make([]*ReadWorker, 0),
-		writers:          make([]*WriteWorker, 0),
-		readerContexts:   make([]context.CancelFunc, 0),
-		writerContexts:   make([]context.CancelFunc, 0),
-		readerWGs:        make([]*sync.WaitGroup, 0),
-		writerWGs:        make([]*sync.WaitGroup, 0),
+		ctx:            ctx,
+		cancel:         cancel,
+		rateLimiter:    rateLimiter,
+		config:         cfg,
+		metrics:        metricsCollector,
+		database:       db,
+		dataGenerator:  generator.NewDataGenerator(time.Now().UnixNano()),
+		workloadGen:    generator.NewWorkloadGenerator(time.Now().UnixNano()),
+		readers:        make([]*ReadWorker, 0),
+		writers:        make([]*WriteWorker, 0),
+		readerContexts: make([]context.CancelFunc, 0),
+		writerContexts: make([]context.CancelFunc, 0),
+		readerWGs:      make([]*sync.WaitGroup, 0),
+		writerWGs:      make([]*sync.WaitGroup, 0),
 	}
 }
 
@@ -116,7 +99,7 @@ func (wp *WorkerPool) Start() error {
 			wp.database,
 			wp.workloadGen,
 			wp.metrics,
-			wp.readRateLimiter,
+			wp.rateLimiter,
 			wp.config.QueryResultLimit,
 		)
 		wp.readers = append(wp.readers, worker)
@@ -129,7 +112,7 @@ func (wp *WorkerPool) Start() error {
 			wp.database,
 			wp.dataGenerator,
 			wp.metrics,
-			wp.writeRateLimiter,
+			wp.rateLimiter,
 		)
 		wp.writers = append(wp.writers, worker)
 	}
@@ -222,7 +205,7 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 			wp.database,
 			wp.workloadGen,
 			wp.metrics,
-			wp.readRateLimiter,
+			wp.rateLimiter,
 			wp.config.QueryResultLimit,
 		)
 		wp.readers = append(wp.readers, worker)
@@ -251,7 +234,7 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 			wp.database,
 			wp.dataGenerator,
 			wp.metrics,
-			wp.writeRateLimiter,
+			wp.rateLimiter,
 		)
 		wp.writers = append(wp.writers, worker)
 
@@ -271,12 +254,8 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 		}(worker, workerCtx, workerWG)
 	}
 
-	// Update rate limiters to increase QPS proportionally
-	newReadQPS := int(float64(newQPS) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
-	newWriteQPS := newQPS - newReadQPS
-
-	wp.readRateLimiter = rate.NewLimiter(rate.Limit(newReadQPS), newReadQPS/10+1)
-	wp.writeRateLimiter = rate.NewLimiter(rate.Limit(newWriteQPS), newWriteQPS/10+1)
+	// Update rate limiter to increase QPS proportionally
+	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
 	wp.config.TargetQPS = newQPS
 
 	slog.Info("Scale-up completed",
@@ -405,12 +384,8 @@ func (wp *WorkerPool) scaleDown(workersToRemove int) error {
 		wp.writers = wp.writers[:lastIndex]
 	}
 
-	// Update rate limiters to reduce QPS proportionally
-	newReadQPS := int(float64(newQPS) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
-	newWriteQPS := newQPS - newReadQPS
-
-	wp.readRateLimiter = rate.NewLimiter(rate.Limit(newReadQPS), newReadQPS/10+1)
-	wp.writeRateLimiter = rate.NewLimiter(rate.Limit(newWriteQPS), newWriteQPS/10+1)
+	// Update rate limiter to reduce QPS proportionally
+	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
 	wp.config.TargetQPS = newQPS
 
 	wp.mu.Unlock()
@@ -433,31 +408,22 @@ func (wp *WorkerPool) UpdateRateLimit(newQPS int) {
 	wp.mu.Lock()
 	defer wp.mu.Unlock()
 
-	// Calculate QPS distribution based on read/write ratio
-	newReadQPS := int(float64(newQPS) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
-	newWriteQPS := newQPS - newReadQPS
-
-	// Create new separate rate limiters
-	newReadRateLimiter := rate.NewLimiter(rate.Limit(newReadQPS), newReadQPS/10+1)
-	newWriteRateLimiter := rate.NewLimiter(rate.Limit(newWriteQPS), newWriteQPS/10+1)
-
-	wp.readRateLimiter = newReadRateLimiter
-	wp.writeRateLimiter = newWriteRateLimiter
+	// Create new rate limiter
+	newRateLimiter := rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
+	wp.rateLimiter = newRateLimiter
 	wp.config.TargetQPS = newQPS
 
-	// Update all existing workers to use the appropriate rate limiters
+	// Update all existing workers to use the new rate limiter
 	for _, reader := range wp.readers {
-		reader.rateLimiter = newReadRateLimiter
+		reader.rateLimiter = newRateLimiter
 	}
 
 	for _, writer := range wp.writers {
-		writer.rateLimiter = newWriteRateLimiter
+		writer.rateLimiter = newRateLimiter
 	}
 
-	slog.Info("Rate limits updated",
-		"new_total_qps", newQPS,
-		"new_read_qps", newReadQPS,
-		"new_write_qps", newWriteQPS,
+	slog.Info("Rate limit updated",
+		"new_qps", newQPS,
 		"readers_updated", len(wp.readers),
 		"writers_updated", len(wp.writers))
 }

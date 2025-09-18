@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
-	"sync"
 	"time"
 
 	"mongodb-benchmarking-tool/internal/database"
@@ -16,7 +15,6 @@ type DataGenerator struct {
 	templates  []string
 	randomSeed int64
 	rng        *rand.Rand
-	mutex      sync.Mutex // Protects rng from concurrent access
 }
 
 // NewDataGenerator creates a new data generator
@@ -68,44 +66,29 @@ func (dg *DataGenerator) generateTitle() string {
 		"Microservices", "DevOps", "System Architecture", "User Experience",
 	}
 
-	dg.mutex.Lock()
-	prefixIndex := dg.rng.Intn(len(prefixes))
-	subjectIndex := dg.rng.Intn(len(subjects))
-	dg.mutex.Unlock()
-
-	prefix := prefixes[prefixIndex]
-	subject := subjects[subjectIndex]
+	prefix := prefixes[dg.rng.Intn(len(prefixes))]
+	subject := subjects[dg.rng.Intn(len(subjects))]
 
 	return fmt.Sprintf("%s %s", prefix, subject)
 }
 
 // generateContent creates realistic document content with frequency-based searchable terms
 func (dg *DataGenerator) generateContent() string {
-	dg.mutex.Lock()
-	templateIndex := dg.rng.Intn(len(dg.templates))
-	dg.mutex.Unlock()
-
-	template := dg.templates[templateIndex]
+	template := dg.templates[dg.rng.Intn(len(dg.templates))]
 
 	// Replace placeholders with searchable terms from common vocabulary
 	searchTerms := getCommonSearchTerms()
 	content := template
-
-	dg.mutex.Lock()
-	topicIndex := dg.rng.Intn(len(searchTerms))
-	techIndex := dg.rng.Intn(len(searchTerms))
-	extraSentences := dg.rng.Intn(3) + 1 // 1-3 additional sentences
-	dg.mutex.Unlock()
-
-	content = strings.ReplaceAll(content, "{TOPIC}", searchTerms[topicIndex])
+	content = strings.ReplaceAll(content, "{TOPIC}", searchTerms[dg.rng.Intn(len(searchTerms))])
 	content = strings.ReplaceAll(content, "{ACTION}", dg.getRandomWord("actions"))
-	content = strings.ReplaceAll(content, "{TECH}", searchTerms[techIndex])
+	content = strings.ReplaceAll(content, "{TECH}", searchTerms[dg.rng.Intn(len(searchTerms))])
 	content = strings.ReplaceAll(content, "{ADJECTIVE}", dg.getRandomWord("adjectives"))
 
 	// Add frequency-based terms throughout the content
 	content += " " + dg.generateContentWithFrequencyBasedTerms()
 
 	// Add random sentences with embedded search terms for more content
+	extraSentences := dg.rng.Intn(3) + 1 // 1-3 additional sentences
 	for i := 0; i < extraSentences; i++ {
 		content += " " + dg.generateSentenceWithSearchTerms()
 	}
@@ -120,11 +103,7 @@ func (dg *DataGenerator) generateContentWithFrequencyBasedTerms() string {
 
 	// Select terms based on their frequency probabilities
 	for _, tf := range termFreqs {
-		dg.mutex.Lock()
-		randomValue := dg.rng.Float64()
-		dg.mutex.Unlock()
-
-		if randomValue < tf.Frequency {
+		if dg.rng.Float64() < tf.Frequency {
 			selectedTerms = append(selectedTerms, tf.Term)
 		}
 	}
@@ -148,10 +127,7 @@ func (dg *DataGenerator) generateContentWithFrequencyBasedTerms() string {
 
 // generateTags creates relevant tags for the document
 func (dg *DataGenerator) generateTags() []string {
-	dg.mutex.Lock()
 	tagCount := dg.rng.Intn(5) + 2 // 2-6 tags
-	dg.mutex.Unlock()
-
 	tags := make([]string, tagCount)
 
 	allTags := []string{
@@ -162,10 +138,7 @@ func (dg *DataGenerator) generateTags() []string {
 	}
 
 	for i := 0; i < tagCount; i++ {
-		dg.mutex.Lock()
-		tagIndex := dg.rng.Intn(len(allTags))
-		dg.mutex.Unlock()
-		tags[i] = allTags[tagIndex]
+		tags[i] = allTags[dg.rng.Intn(len(allTags))]
 	}
 
 	return tags
@@ -174,20 +147,14 @@ func (dg *DataGenerator) generateTags() []string {
 // generateSearchTerms creates terms optimized for text search
 // Uses the same term pool as query generation to ensure search hits
 func (dg *DataGenerator) generateSearchTerms() string {
-	dg.mutex.Lock()
 	termCount := dg.rng.Intn(10) + 5 // 5-14 terms
-	dg.mutex.Unlock()
-
 	terms := make([]string, termCount)
 
 	// Use the same search terms as the workload generator to ensure matches
 	searchTerms := getCommonSearchTerms()
 
 	for i := 0; i < termCount; i++ {
-		dg.mutex.Lock()
-		termIndex := dg.rng.Intn(len(searchTerms))
-		dg.mutex.Unlock()
-		terms[i] = searchTerms[termIndex]
+		terms[i] = searchTerms[dg.rng.Intn(len(searchTerms))]
 	}
 
 	return strings.Join(terms, " ")
@@ -211,15 +178,9 @@ func (dg *DataGenerator) generateSentence() string {
 		"better user experience", "cost effectiveness", "data consistency",
 	}
 
-	dg.mutex.Lock()
-	starterIndex := dg.rng.Intn(len(starters))
-	actionIndex := dg.rng.Intn(len(actions))
-	objectIndex := dg.rng.Intn(len(objects))
-	dg.mutex.Unlock()
-
-	starter := starters[starterIndex]
-	action := actions[actionIndex]
-	object := objects[objectIndex]
+	starter := starters[dg.rng.Intn(len(starters))]
+	action := actions[dg.rng.Intn(len(actions))]
+	object := objects[dg.rng.Intn(len(objects))]
 
 	return fmt.Sprintf("%s %s %s.", starter, action, object)
 }
@@ -241,21 +202,13 @@ func (dg *DataGenerator) generateSentenceWithSearchTerms() string {
 		"Advanced %s techniques enable better %s scalability and %s efficiency.",
 	}
 
-	dg.mutex.Lock()
-	starterIndex := dg.rng.Intn(len(starters))
-	templateIndex := dg.rng.Intn(len(templates))
-	term1Index := dg.rng.Intn(len(searchTerms))
-	term2Index := dg.rng.Intn(len(searchTerms))
-	term3Index := dg.rng.Intn(len(searchTerms))
-	dg.mutex.Unlock()
-
-	starter := starters[starterIndex]
-	template := templates[templateIndex]
+	starter := starters[dg.rng.Intn(len(starters))]
+	template := templates[dg.rng.Intn(len(templates))]
 
 	// Fill template with search terms
-	term1 := searchTerms[term1Index]
-	term2 := searchTerms[term2Index]
-	term3 := searchTerms[term3Index]
+	term1 := searchTerms[dg.rng.Intn(len(searchTerms))]
+	term2 := searchTerms[dg.rng.Intn(len(searchTerms))]
+	term3 := searchTerms[dg.rng.Intn(len(searchTerms))]
 
 	sentence := fmt.Sprintf(template, term1, term2, term3)
 	return starter + " " + sentence
@@ -270,10 +223,7 @@ func (dg *DataGenerator) generateDocument() database.Document {
 func (dg *DataGenerator) getRandomWord(category string) string {
 	for _, wordList := range dg.wordLists {
 		if len(wordList) > 0 && strings.Contains(wordList[0], category) {
-			dg.mutex.Lock()
-			wordIndex := dg.rng.Intn(len(wordList))
-			dg.mutex.Unlock()
-			return wordList[wordIndex]
+			return wordList[dg.rng.Intn(len(wordList))]
 		}
 	}
 	return "sample"
