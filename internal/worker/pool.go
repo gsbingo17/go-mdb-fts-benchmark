@@ -107,10 +107,12 @@ func (wp *WorkerPool) Start() error {
 
 	// Create write workers
 	for i := 0; i < writeWorkerCount; i++ {
+		// Create a unique data generator for each worker to avoid race conditions
+		workerDataGen := generator.NewDataGenerator(time.Now().UnixNano() + int64(i))
 		worker := NewWriteWorker(
 			i,
 			wp.database,
-			wp.dataGenerator,
+			workerDataGen,
 			wp.metrics,
 			wp.rateLimiter,
 		)
@@ -229,10 +231,12 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 	// Add write workers
 	for i := 0; i < writeWorkerCount; i++ {
 		workerID := len(wp.writers) + i
+		// Create a unique data generator for each worker to avoid race conditions
+		workerDataGen := generator.NewDataGenerator(time.Now().UnixNano() + int64(workerID))
 		worker := NewWriteWorker(
 			workerID,
 			wp.database,
-			wp.dataGenerator,
+			workerDataGen,
 			wp.metrics,
 			wp.rateLimiter,
 		)
