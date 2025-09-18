@@ -91,19 +91,23 @@ func (d *DocumentDBClient) Ping(ctx context.Context) error {
 // Note: DocumentDB has limitations on text search compared to MongoDB
 func (d *DocumentDBClient) CreateTextIndex(ctx context.Context) error {
 	// DocumentDB supports text indexes but with limitations
+	// DocumentDB does NOT support default_language option
 	indexModel := mongo.IndexModel{
 		Keys: bson.D{
 			{Key: "title", Value: "text"},
 			{Key: "content", Value: "text"},
 			{Key: "search_terms", Value: "text"},
 		},
-		Options: options.Index().SetDefaultLanguage("english"),
+		// DocumentDB compatibility: Remove unsupported options
+		Options: nil, // No language specification - DocumentDB doesn't support SetDefaultLanguage
 	}
 
+	fmt.Printf("INFO: Creating DocumentDB-compatible text index (without language specification)\n")
 	_, err := d.collection.Indexes().CreateOne(ctx, indexModel)
 	if err != nil {
 		return fmt.Errorf("failed to create text index in DocumentDB: %w", err)
 	}
+	fmt.Printf("SUCCESS: DocumentDB text index created successfully\n")
 	return nil
 }
 
