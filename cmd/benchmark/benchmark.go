@@ -39,7 +39,19 @@ func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 	case "mongodb":
 		db = database.NewMongoDBClient(cfg.Database)
 	case "documentdb":
-		db = database.NewDocumentDBClient(cfg.Database)
+		docdbClient := database.NewDocumentDBClient(cfg.Database)
+
+		// Set up DocumentDB monitoring if configured
+		if cfg.Cost.Provider == "documentdb" {
+			if monitor, err := metrics.NewDocumentDBMonitor(cfg.Cost.DocumentDB); err == nil {
+				docdbClient.SetMonitor(monitor)
+				slog.Info("DocumentDB CloudWatch monitoring enabled")
+			} else {
+				slog.Warn("Failed to create DocumentDB monitor, using fallback metrics", "error", err)
+			}
+		}
+
+		db = docdbClient
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", cfg.Database.Type)
 	}
@@ -494,14 +506,16 @@ func (br *BenchmarkRunner) getCurrentPhaseWithStatus(status metrics.SaturationSt
 		"current_cpu", status.CurrentCPU,
 		"target_cpu", status.TargetCPU)
 
+	// CRITICAL FIX: Measurement phase takes priority over stability status
+	// Once measurement starts, stay in measurement phase even if stability fluctuates briefly
+	if br.measurementActive {
+		slog.Debug("Phase: measurement (measurement active - highest priority)")
+		return metrics.PhaseMeasurement
+	}
+
 	if !status.IsStable {
 		slog.Debug("Phase: rampup (not stable)")
 		return metrics.PhaseRampup
-	}
-
-	if br.measurementActive {
-		slog.Debug("Phase: measurement (stable + measurement active)")
-		return metrics.PhaseMeasurement
 	}
 
 	// CPU stable but measurement not started = stabilization

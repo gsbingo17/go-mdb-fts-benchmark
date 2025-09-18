@@ -134,11 +134,31 @@ func (sc *SaturationController) checkAndAdjust(ctx context.Context) error {
 	slog.Debug("CPU utilization check",
 		"current_cpu", cpu,
 		"target_cpu", sc.targetCPU,
-		"history_points", len(sc.cpuHistory))
+		"history_points", len(sc.cpuHistory),
+		"measurement_active", sc.measurementActive)
+
+	// CRITICAL FIX: Do NOT make workload adjustments during measurement phase
+	// Measurement phase must maintain stable workload for clean metrics
+	if sc.measurementActive {
+		slog.Debug("Skipping workload adjustment during measurement phase",
+			"current_cpu", cpu,
+			"target_cpu", sc.targetCPU,
+			"measurement_active", sc.measurementActive)
+		// Still check stability even during measurement
+		sc.checkStability()
+		return nil
+	}
 
 	// Check if we need adjustment (with cooldown protection)
 	tolerance := 5.0 // 5% tolerance
-	timeSinceLastAdjustment := time.Since(sc.lastAdjustment)
+	var timeSinceLastAdjustment time.Duration
+
+	// CRITICAL FIX: Handle zero time to prevent overflow
+	if !sc.lastAdjustment.IsZero() {
+		timeSinceLastAdjustment = time.Since(sc.lastAdjustment)
+	} else {
+		timeSinceLastAdjustment = time.Duration(0)
+	}
 
 	if cpu < sc.targetCPU-tolerance {
 		// CPU too low - scale up workload (if cooldown allows)

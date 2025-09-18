@@ -387,10 +387,10 @@ func (dm *DocumentDBMonitor) GetMemoryUtilization(ctx context.Context) (float64,
 	return 0.0, nil
 }
 
-// GetCacheUtilization retrieves cache utilization from CloudWatch
+// GetCacheUtilization retrieves BufferCacheHitRatio from CloudWatch
 func (dm *DocumentDBMonitor) GetCacheUtilization(ctx context.Context) (float64, error) {
-	// DocumentDB doesn't expose cache metrics directly like MongoDB's WiredTiger
-	return 0.0, fmt.Errorf("cache metrics not available for DocumentDB")
+	// BufferCacheHitRatio provides cache hit percentage (0-100%)
+	return dm.getCloudWatchMetric(ctx, "BufferCacheHitRatio", "Average")
 }
 
 // GetConnectionCount retrieves connection count from CloudWatch
