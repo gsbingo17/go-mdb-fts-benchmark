@@ -4,15 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/cloudwatch"
-	"github.com/aws/aws-sdk-go-v2/service/pricing"
-	"github.com/aws/aws-sdk-go-v2/service/pricing/types"
 
 	mongoConfig "mongodb-benchmarking-tool/internal/config"
 )
@@ -207,7 +203,6 @@ type AtlasClusterInfo struct {
 // DocumentDBRealTimeCostTracker implements cost tracking for AWS DocumentDB
 type DocumentDBRealTimeCostTracker struct {
 	cloudwatchClient *cloudwatch.Client
-	pricingClient    *pricing.Client
 	clusterID        string
 	region           string
 	instanceType     string
@@ -222,13 +217,8 @@ func NewDocumentDBRealTimeCostTracker(cfg mongoConfig.DocumentDBCostConfig) (*Do
 		return nil, err
 	}
 
-	// Pricing API is only available in us-east-1
-	pricingConfig, _ := config.LoadDefaultConfig(context.Background(),
-		config.WithRegion("us-east-1"))
-
 	return &DocumentDBRealTimeCostTracker{
 		cloudwatchClient: cloudwatch.NewFromConfig(awsConfig),
-		pricingClient:    pricing.NewFromConfig(pricingConfig),
 		clusterID:        cfg.ClusterID,
 		region:           cfg.Region,
 		instanceType:     cfg.InstanceType,
@@ -238,14 +228,8 @@ func NewDocumentDBRealTimeCostTracker(cfg mongoConfig.DocumentDBCostConfig) (*Do
 
 // GetCurrentHourlyCost retrieves current hourly cost for DocumentDB
 func (dct *DocumentDBRealTimeCostTracker) GetCurrentHourlyCost(ctx context.Context) (float64, error) {
-	// Get actual pricing from AWS Pricing API
-	price, err := dct.getInstancePrice(ctx)
-	if err != nil {
-		slog.Warn("Failed to get pricing info, using base cost", "error", err)
-		return dct.baseCostPerHour, nil
-	}
-
-	return price, nil
+	// Use configured hourly cost instead of AWS Pricing API lookup
+	return dct.baseCostPerHour, nil
 }
 
 // GetStorageCost retrieves storage cost for DocumentDB
@@ -312,39 +296,6 @@ func (dct *DocumentDBRealTimeCostTracker) GetCostProjection(ctx context.Context,
 		BreakdownBy:       "compute_storage_io",
 		LastUpdated:       time.Now(),
 	}, nil
-}
-
-// getInstancePrice retrieves instance pricing from AWS Pricing API
-func (dct *DocumentDBRealTimeCostTracker) getInstancePrice(ctx context.Context) (float64, error) {
-	input := &pricing.GetProductsInput{
-		ServiceCode: aws.String("AmazonDocDB"),
-		Filters: []types.Filter{
-			{
-				Type:  types.FilterTypeTermMatch,
-				Field: aws.String("instanceType"),
-				Value: aws.String(dct.instanceType),
-			},
-			{
-				Type:  types.FilterTypeTermMatch,
-				Field: aws.String("location"),
-				Value: aws.String(dct.getLocationFromRegion()),
-			},
-		},
-	}
-
-	result, err := dct.pricingClient.GetProducts(ctx, input)
-	if err != nil {
-		return 0, err
-	}
-
-	// Parse pricing information (simplified)
-	for range result.PriceList {
-		// In a real implementation, you'd parse the complex JSON structure
-		// to extract the on-demand hourly price
-		return dct.baseCostPerHour, nil // Return base cost for now
-	}
-
-	return dct.baseCostPerHour, nil
 }
 
 // getStorageUsage retrieves storage usage from CloudWatch

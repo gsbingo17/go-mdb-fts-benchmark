@@ -256,11 +256,19 @@ func (sc *SaturationController) canAdjust() bool {
 
 // executeAdjustment sends the adjustment to the callback
 func (sc *SaturationController) executeAdjustment(adjustment WorkloadAdjustment) {
+	// CRITICAL FIX: Handle zero time to prevent overflow in logging
+	var timeSinceLastAdjustment time.Duration
+	if !sc.lastAdjustment.IsZero() {
+		timeSinceLastAdjustment = time.Since(sc.lastAdjustment)
+	} else {
+		timeSinceLastAdjustment = time.Duration(0)
+	}
+
 	slog.Info("Executing workload adjustment",
 		"type", adjustment.Type,
 		"magnitude", adjustment.Magnitude,
 		"reason", adjustment.Reason,
-		"time_since_last_adjustment", time.Since(sc.lastAdjustment))
+		"time_since_last_adjustment", timeSinceLastAdjustment)
 
 	// Update last adjustment time
 	sc.lastAdjustment = time.Now()
