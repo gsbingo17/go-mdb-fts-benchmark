@@ -79,9 +79,8 @@ func applyDefaults(config *Config) error {
 	if config.Workload.SaturationTarget == 0 {
 		config.Workload.SaturationTarget = 80.0 // 80% CPU
 	}
-	if config.Workload.WarmupDuration == 0 {
-		config.Workload.WarmupDuration = 2 * time.Minute
-	}
+	// REMOVED: Warmup duration default override to respect explicit "0m" settings
+	// Users can explicitly set warmup_duration: "0m" to skip warmup phase
 	if config.Workload.StabilityWindow == 0 {
 		config.Workload.StabilityWindow = 30 * time.Minute
 	}
