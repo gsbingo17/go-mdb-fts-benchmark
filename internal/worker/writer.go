@@ -96,11 +96,25 @@ func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 		ww.operationLog = append(ww.operationLog, logEntry)
 	}
 
+	// Log insert operations to match read worker behavior
+	if success {
+		slog.Debug("Successful document insert",
+			"worker_id", ww.id,
+			"document_title", doc.Title[:min(50, len(doc.Title))],
+			"latency_us", latency.Microseconds())
+	} else {
+		slog.Debug("Failed document insert",
+			"worker_id", ww.id,
+			"document_title", doc.Title[:min(50, len(doc.Title))],
+			"latency_us", latency.Microseconds(),
+			"error", err.Error())
+	}
+
 	// Log slow operations
 	if latency > 500*time.Millisecond {
 		slog.Warn("Slow write operation detected",
 			"worker_id", ww.id,
-			"latency_ms", latency.Milliseconds(),
+			"latency_us", latency.Microseconds(),
 			"document_title", doc.Title[:min(50, len(doc.Title))])
 	}
 

@@ -25,6 +25,7 @@ type DatabaseConfig struct {
 
 // WorkloadConfig defines the benchmark workload parameters
 type WorkloadConfig struct {
+	BenchmarkMode      string         `yaml:"benchmark_mode"` // "text_search" or "field_query"
 	ReadWriteRatio     ReadWriteRatio `yaml:"read_write_ratio"`
 	Duration           time.Duration  `yaml:"duration"`
 	TargetQPS          int            `yaml:"target_qps"`

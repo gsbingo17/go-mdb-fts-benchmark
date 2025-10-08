@@ -173,11 +173,26 @@ func (br *BenchmarkRunner) connectDatabase(ctx context.Context) error {
 
 // setupData prepares the database with test data and indexes
 func (br *BenchmarkRunner) setupData(ctx context.Context) error {
-	slog.Info("Setting up database schema and data")
+	slog.Info("Setting up database schema and data", "benchmark_mode", br.config.Workload.BenchmarkMode)
 
-	// Create text indexes
-	if err := br.database.CreateTextIndex(ctx); err != nil {
-		return fmt.Errorf("failed to create text index: %w", err)
+	// Create indexes based on benchmark mode
+	switch br.config.Workload.BenchmarkMode {
+	case "text_search":
+		if err := br.database.CreateTextIndex(ctx); err != nil {
+			return fmt.Errorf("failed to create text index: %w", err)
+		}
+		slog.Info("Created text index for text search benchmark")
+	case "field_query":
+		if err := br.database.CreateFieldIndex(ctx, "title"); err != nil {
+			return fmt.Errorf("failed to create field index: %w", err)
+		}
+		slog.Info("Created field index for field query benchmark")
+	default:
+		// Default to text search
+		if err := br.database.CreateTextIndex(ctx); err != nil {
+			return fmt.Errorf("failed to create text index: %w", err)
+		}
+		slog.Info("Created text index (default mode)")
 	}
 
 	// Check if we need to seed data
@@ -197,7 +212,7 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 		}
 	}
 
-	slog.Info("Database setup completed", "document_count", requiredDocuments)
+	slog.Info("Database setup completed", "document_count", requiredDocuments, "benchmark_mode", br.config.Workload.BenchmarkMode)
 	return nil
 }
 

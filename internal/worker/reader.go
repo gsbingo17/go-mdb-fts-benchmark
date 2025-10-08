@@ -14,13 +14,14 @@ import (
 
 // ReadWorker performs text search operations
 type ReadWorker struct {
-	id           int
-	database     database.Database
-	workloadGen  *generator.WorkloadGenerator
-	metrics      *metrics.MetricsCollector
-	rateLimiter  *rate.Limiter
-	operationLog []OperationLog
-	queryLimit   int
+	id            int
+	database      database.Database
+	workloadGen   *generator.WorkloadGenerator
+	metrics       *metrics.MetricsCollector
+	rateLimiter   *rate.Limiter
+	operationLog  []OperationLog
+	queryLimit    int
+	benchmarkMode string // "text_search" or "field_query"
 }
 
 // OperationLog tracks individual operations for analysis
@@ -42,15 +43,17 @@ func NewReadWorker(
 	metricsCollector *metrics.MetricsCollector,
 	rateLimiter *rate.Limiter,
 	queryLimit int,
+	benchmarkMode string,
 ) *ReadWorker {
 	return &ReadWorker{
-		id:           id,
-		database:     db,
-		workloadGen:  workloadGen,
-		metrics:      metricsCollector,
-		rateLimiter:  rateLimiter,
-		operationLog: make([]OperationLog, 0, 1000),
-		queryLimit:   queryLimit,
+		id:            id,
+		database:      db,
+		workloadGen:   workloadGen,
+		metrics:       metricsCollector,
+		rateLimiter:   rateLimiter,
+		operationLog:  make([]OperationLog, 0, 1000),
+		queryLimit:    queryLimit,
+		benchmarkMode: benchmarkMode,
 	}
 }
 
@@ -70,9 +73,19 @@ func (rw *ReadWorker) Start(ctx context.Context) {
 				return
 			}
 
-			// Execute text search operation
-			if err := rw.executeTextSearch(ctx); err != nil {
-				slog.Debug("Text search failed", "worker_id", rw.id, "error", err)
+			// Execute operation based on benchmark mode
+			var err error
+			switch rw.benchmarkMode {
+			case "text_search":
+				err = rw.executeTextSearch(ctx)
+			case "field_query":
+				err = rw.executeFieldQuery(ctx)
+			default:
+				err = rw.executeTextSearch(ctx) // Default to text search
+			}
+
+			if err != nil {
+				slog.Debug("Operation failed", "worker_id", rw.id, "mode", rw.benchmarkMode, "error", err)
 			}
 		}
 	}
@@ -117,13 +130,13 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 		slog.Debug("Zero results query",
 			"worker_id", rw.id,
 			"query", query,
-			"latency_ms", latency.Milliseconds())
+			"latency_us", latency.Microseconds())
 	} else {
 		slog.Debug("Successful search",
 			"worker_id", rw.id,
 			"query", query,
 			"result_count", resultCount,
-			"latency_ms", latency.Milliseconds())
+			"latency_us", latency.Microseconds())
 	}
 
 	// Log slow queries
@@ -131,7 +144,67 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 		slog.Warn("Slow query detected",
 			"worker_id", rw.id,
 			"query", query,
-			"latency_ms", latency.Milliseconds(),
+			"latency_us", latency.Microseconds(),
+			"result_count", resultCount)
+	}
+
+	return err
+}
+
+// executeFieldQuery performs a single field equality query operation
+func (rw *ReadWorker) executeFieldQuery(ctx context.Context) error {
+	startTime := time.Now()
+
+	// Generate field value for equality query
+	fieldValue := rw.workloadGen.GenerateFieldValue()
+
+	// Execute the field query with limit (search on "title" field)
+	resultCount, err := rw.database.ExecuteFieldQuery(ctx, "title", fieldValue, rw.queryLimit)
+
+	latency := time.Since(startTime)
+	success := err == nil
+
+	// Record metrics
+	rw.metrics.RecordRead(latency, success)
+
+	// Log operation (with size limit)
+	if len(rw.operationLog) < cap(rw.operationLog) {
+		logEntry := OperationLog{
+			Timestamp:   startTime,
+			Operation:   "field_query",
+			Query:       fieldValue,
+			Latency:     latency,
+			ResultCount: resultCount,
+			Success:     success,
+		}
+
+		if err != nil {
+			logEntry.Error = err.Error()
+		}
+
+		rw.operationLog = append(rw.operationLog, logEntry)
+	}
+
+	// Log zero result queries to monitor search effectiveness
+	if resultCount == 0 {
+		slog.Debug("Zero results field query",
+			"worker_id", rw.id,
+			"field_value", fieldValue,
+			"latency_us", latency.Microseconds())
+	} else {
+		slog.Debug("Successful field query",
+			"worker_id", rw.id,
+			"field_value", fieldValue,
+			"result_count", resultCount,
+			"latency_us", latency.Microseconds())
+	}
+
+	// Log slow queries
+	if latency > 1000*time.Millisecond {
+		slog.Warn("Slow field query detected",
+			"worker_id", rw.id,
+			"field_value", fieldValue,
+			"latency_us", latency.Microseconds(),
 			"result_count", resultCount)
 	}
 

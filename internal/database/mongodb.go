@@ -84,13 +84,11 @@ func (m *MongoDBClient) Ping(ctx context.Context) error {
 	return m.client.Ping(ctx, nil)
 }
 
-// CreateTextIndex creates a text search index
+// CreateTextIndex creates a text search index on single field
 func (m *MongoDBClient) CreateTextIndex(ctx context.Context) error {
 	indexModel := mongo.IndexModel{
 		Keys: bson.D{
-			{Key: "title", Value: "text"},
-			{Key: "content", Value: "text"},
-			{Key: "search_terms", Value: "text"},
+			{Key: "content", Value: "text"}, // Single field text index
 		},
 		Options: options.Index().SetDefaultLanguage("english"),
 	}
@@ -98,6 +96,21 @@ func (m *MongoDBClient) CreateTextIndex(ctx context.Context) error {
 	_, err := m.collection.Indexes().CreateOne(ctx, indexModel)
 	if err != nil {
 		return fmt.Errorf("failed to create text index: %w", err)
+	}
+	return nil
+}
+
+// CreateFieldIndex creates a regular index on a single field
+func (m *MongoDBClient) CreateFieldIndex(ctx context.Context, field string) error {
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{
+			{Key: field, Value: 1}, // Ascending index
+		},
+	}
+
+	_, err := m.collection.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create field index on %s: %w", field, err)
 	}
 	return nil
 }
@@ -125,6 +138,36 @@ func (m *MongoDBClient) ExecuteTextSearch(ctx context.Context, query string, lim
 	cursor, err := m.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return 0, fmt.Errorf("text search failed: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	count := 0
+	for cursor.Next(ctx) {
+		count++
+	}
+
+	if err := cursor.Err(); err != nil {
+		return 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	return count, nil
+}
+
+// ExecuteFieldQuery performs a field equality query with optional result limit
+func (m *MongoDBClient) ExecuteFieldQuery(ctx context.Context, field string, value interface{}, limit int) (int, error) {
+	filter := bson.D{
+		{Key: field, Value: value},
+	}
+
+	// Configure find options with limit if specified
+	opts := options.Find()
+	if limit > 0 {
+		opts = opts.SetLimit(int64(limit))
+	}
+
+	cursor, err := m.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return 0, fmt.Errorf("field query failed: %w", err)
 	}
 	defer cursor.Close(ctx)
 

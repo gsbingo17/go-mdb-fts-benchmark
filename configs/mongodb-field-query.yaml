@@ -1,7 +1,7 @@
-# MongoDB Atlas Configuration
+# MongoDB Atlas Configuration - Field Query Benchmark
 database:
   type: "mongodb"
-  # uri: "mongodb+srv://test:test@cluster0.allsw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+  # uri: "mongodb+srv://test:test@cluster0.alsw.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
   uri: "mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000"
   database: "benchmark"
   collection: "documents"
@@ -12,19 +12,19 @@ database:
   socket_timeout_ms: 120000   # Increased from 30000 to 120000 (2 minutes)
 
 workload:
-  benchmark_mode: "text_search"  # "text_search" or "field_query"
+  benchmark_mode: "field_query"  # "text_search" or "field_query"
   read_write_ratio:
     read_percent: 80
     write_percent: 20
   duration: "1m"           # Longer duration for stable saturation measurement
   target_qps: 200           # Start higher, will auto-adjust to reach 90% CPU
   worker_count: 50          # Set to 50 workers as requested
-  dataset_size: 1000000     # CACHE REDUCTION: Increased from 100K to 1M documents (exceeds cache)
+  dataset_size: 100000     # CACHE REDUCTION: Increased from 100K to 1M documents (exceeds cache)
   saturation_target: 90.0   # Target 90% CPU saturation
   warmup_duration: "0m"     # Longer warmup for proper saturation
   stability_window: "5m"    # Time to maintain stable 90% CPU before measuring
   adjustment_cooldown: "3m" # Time to wait between workload adjustments
-  query_result_limit: 50    # Limit text search results to improve realism
+  query_result_limit: 50    # Limit field query results to improve realism
 
 metrics:
   collection_interval: "10s"

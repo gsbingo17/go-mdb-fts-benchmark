@@ -52,46 +52,51 @@ func (dg *DataGenerator) GenerateDocuments(count int) []database.Document {
 	return documents
 }
 
-// generateTitle creates a realistic document title
+// generateTitle creates a compound term title for field queries
+// FAIR BENCHMARKING: Uses same compound terms as workload generator
 func (dg *DataGenerator) generateTitle() string {
-	prefixes := []string{
-		"Understanding", "Introduction to", "Advanced", "Complete Guide to",
-		"Best Practices for", "Modern", "Efficient", "Optimizing",
-		"Building", "Implementing", "Designing", "Scaling",
+	baseTerms := getBaseTermsForData()
+
+	term1 := baseTerms[dg.rng.Intn(len(baseTerms))]
+	term2 := baseTerms[dg.rng.Intn(len(baseTerms))]
+
+	// Avoid self-combinations for better diversity
+	for term1 == term2 {
+		term2 = baseTerms[dg.rng.Intn(len(baseTerms))]
 	}
 
-	subjects := []string{
-		"Database Performance", "Text Search", "Cloud Computing", "Data Analytics",
-		"Machine Learning", "Web Development", "API Design", "Security",
-		"Microservices", "DevOps", "System Architecture", "User Experience",
-	}
-
-	prefix := prefixes[dg.rng.Intn(len(prefixes))]
-	subject := subjects[dg.rng.Intn(len(subjects))]
-
-	return fmt.Sprintf("%s %s", prefix, subject)
+	return term1 + "_" + term2
 }
 
-// generateContent creates realistic document content with frequency-based searchable terms
+// generateContent creates content using base template with compound terms
+// SIMPLIFIED: Uses single template for consistent document length and fair benchmarking
 func (dg *DataGenerator) generateContent() string {
-	template := dg.templates[dg.rng.Intn(len(dg.templates))]
+	baseTemplate := "In modern {TECH} development, it's crucial to optimize {ADJECTIVE} solutions that can handle {TOPIC} effectively."
 
-	// Replace placeholders with searchable terms from common vocabulary
-	searchTerms := getCommonSearchTerms()
-	content := template
-	content = strings.ReplaceAll(content, "{TOPIC}", searchTerms[dg.rng.Intn(len(searchTerms))])
-	content = strings.ReplaceAll(content, "{ACTION}", dg.getRandomWord("actions"))
-	content = strings.ReplaceAll(content, "{TECH}", searchTerms[dg.rng.Intn(len(searchTerms))])
-	content = strings.ReplaceAll(content, "{ADJECTIVE}", dg.getRandomWord("adjectives"))
+	baseTerms := getBaseTermsForData()
+	adjectives := []string{"efficient", "scalable", "robust", "reliable", "secure", "modern", "advanced", "optimized", "high-performance", "enterprise-grade", "cloud-native", "distributed", "resilient", "adaptive", "intelligent", "automated", "streamlined", "innovative", "cutting-edge", "next-generation"}
 
-	// Add frequency-based terms throughout the content
-	content += " " + dg.generateContentWithFrequencyBasedTerms()
-
-	// Add random sentences with embedded search terms for more content
-	extraSentences := dg.rng.Intn(3) + 1 // 1-3 additional sentences
-	for i := 0; i < extraSentences; i++ {
-		content += " " + dg.generateSentenceWithSearchTerms()
+	// Generate two different compound terms for TECH and TOPIC
+	tech1 := baseTerms[dg.rng.Intn(len(baseTerms))]
+	tech2 := baseTerms[dg.rng.Intn(len(baseTerms))]
+	for tech1 == tech2 {
+		tech2 = baseTerms[dg.rng.Intn(len(baseTerms))]
 	}
+	techTerm := tech1 + "_" + tech2
+
+	topic1 := baseTerms[dg.rng.Intn(len(baseTerms))]
+	topic2 := baseTerms[dg.rng.Intn(len(baseTerms))]
+	for topic1 == topic2 || (topic1 == tech1 && topic2 == tech2) {
+		topic2 = baseTerms[dg.rng.Intn(len(baseTerms))]
+	}
+	topicTerm := topic1 + "_" + topic2
+
+	adjective := adjectives[dg.rng.Intn(len(adjectives))]
+
+	// Replace placeholders with compound terms
+	content := strings.ReplaceAll(baseTemplate, "{TECH}", techTerm)
+	content = strings.ReplaceAll(content, "{ADJECTIVE}", adjective)
+	content = strings.ReplaceAll(content, "{TOPIC}", topicTerm)
 
 	return content
 }
@@ -325,6 +330,62 @@ func getTermFrequencyDistribution() []TermFrequency {
 		{"envoy", 0.006}, {"jaeger", 0.008}, {"zipkin", 0.006}, {"fluentd", 0.008},
 		{"elk", 0.01}, {"kafka", 0.012}, {"rabbitmq", 0.01}, {"activemq", 0.006},
 		{"nginx", 0.015}, {"apache", 0.012}, {"haproxy", 0.008}, {"traefik", 0.006},
+	}
+}
+
+// getBaseTermsForData returns base vocabulary for compound term generation
+// Same terms as workload generator for consistency
+func getBaseTermsForData() []string {
+	return []string{
+		// Core Technology Terms
+		"database", "mongodb", "documentdb", "search", "index", "query", "performance",
+		"optimization", "scaling", "cloud", "aws", "atlas", "aggregation", "pipeline",
+		"sharding", "replication", "consistency", "availability", "durability", "backup",
+		"restore", "migration", "cluster", "node", "replica", "primary", "secondary",
+		"failover", "recovery", "partition", "shard", "collection", "document", "field",
+		"schema", "validation", "constraint", "relationship", "foreign", "security",
+
+		// Development & Architecture
+		"api", "rest", "graphql", "microservices", "architecture", "design", "patterns",
+		"framework", "library", "tool", "testing", "deployment", "monitoring", "logging",
+		"metrics", "observability", "tracing", "debugging", "profiling", "analytics",
+		"service", "endpoint", "middleware", "gateway", "proxy", "load", "balancer",
+		"cache", "session", "authentication", "authorization", "encryption", "protocol",
+
+		// Infrastructure & Cloud
+		"kubernetes", "docker", "container", "orchestration", "helm", "namespace",
+		"infrastructure", "terraform", "ansible", "jenkins", "cicd", "devops",
+		"automation", "provisioning", "configuration", "management", "network",
+		"storage", "compute", "memory", "cpu", "bandwidth", "throughput", "latency",
+
+		// Programming & Development
+		"javascript", "typescript", "python", "java", "golang", "rust", "nodejs",
+		"react", "vue", "angular", "spring", "django", "flask", "express", "async",
+		"thread", "process", "concurrent", "parallel", "distributed", "event",
+
+		// Business & Analytics
+		"analytics", "intelligence", "insights", "reporting", "dashboard", "visualization",
+		"data", "information", "strategy", "planning", "execution", "operations",
+		"business", "enterprise", "customer", "user", "product", "feature",
+
+		// Quality & Performance
+		"testing", "validation", "verification", "quality", "assurance", "reliability",
+		"scalability", "efficiency", "speed", "benchmarking", "tuning", "profiling",
+		"bottleneck", "capacity", "measurement", "alerting", "notification", "incident",
+
+		// Technologies & Tools
+		"mysql", "postgresql", "redis", "elasticsearch", "cassandra", "dynamodb",
+		"prometheus", "grafana", "kibana", "nginx", "apache", "kafka", "rabbitmq",
+		"blockchain", "kubernetes", "serverless", "lambda", "microfunction",
+
+		// Methodologies & Practices
+		"agile", "scrum", "kanban", "waterfall", "sre", "engineering", "continuous",
+		"integration", "delivery", "immutable", "declarative", "imperative", "reactive",
+
+		// Emerging Technologies
+		"machine", "learning", "artificial", "intelligence", "neural", "network",
+		"deep", "algorithm", "model", "training", "inference", "blockchain",
+		"cryptocurrency", "smart", "contract", "iot", "edge", "quantum",
 	}
 }
 

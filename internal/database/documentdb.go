@@ -94,9 +94,7 @@ func (d *DocumentDBClient) CreateTextIndex(ctx context.Context) error {
 	// DocumentDB does NOT support default_language option
 	indexModel := mongo.IndexModel{
 		Keys: bson.D{
-			{Key: "title", Value: "text"},
-			{Key: "content", Value: "text"},
-			{Key: "search_terms", Value: "text"},
+			{Key: "content", Value: "text"}, // Single field text index
 		},
 		// DocumentDB compatibility: Remove unsupported options
 		Options: nil, // No language specification - DocumentDB doesn't support SetDefaultLanguage
@@ -108,6 +106,21 @@ func (d *DocumentDBClient) CreateTextIndex(ctx context.Context) error {
 		return fmt.Errorf("failed to create text index in DocumentDB: %w", err)
 	}
 	fmt.Printf("SUCCESS: DocumentDB text index created successfully\n")
+	return nil
+}
+
+// CreateFieldIndex creates a regular index on a single field
+func (d *DocumentDBClient) CreateFieldIndex(ctx context.Context, field string) error {
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{
+			{Key: field, Value: 1}, // Ascending index
+		},
+	}
+
+	_, err := d.collection.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create field index on %s in DocumentDB: %w", field, err)
+	}
 	return nil
 }
 
@@ -135,6 +148,36 @@ func (d *DocumentDBClient) ExecuteTextSearch(ctx context.Context, query string, 
 	cursor, err := d.collection.Find(ctx, filter, opts)
 	if err != nil {
 		return 0, fmt.Errorf("text search failed in DocumentDB: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	count := 0
+	for cursor.Next(ctx) {
+		count++
+	}
+
+	if err := cursor.Err(); err != nil {
+		return 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	return count, nil
+}
+
+// ExecuteFieldQuery performs a field equality query with optional result limit
+func (d *DocumentDBClient) ExecuteFieldQuery(ctx context.Context, field string, value interface{}, limit int) (int, error) {
+	filter := bson.D{
+		{Key: field, Value: value},
+	}
+
+	// Configure find options with limit if specified
+	opts := options.Find()
+	if limit > 0 {
+		opts = opts.SetLimit(int64(limit))
+	}
+
+	cursor, err := d.collection.Find(ctx, filter, opts)
+	if err != nil {
+		return 0, fmt.Errorf("field query failed in DocumentDB: %w", err)
 	}
 	defer cursor.Close(ctx)
 

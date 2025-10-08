@@ -34,10 +34,12 @@ type Database interface {
 
 	// Index management
 	CreateTextIndex(ctx context.Context) error
+	CreateFieldIndex(ctx context.Context, field string) error
 	DropIndexes(ctx context.Context) error
 
 	// Data operations
 	ExecuteTextSearch(ctx context.Context, query string, limit int) (int, error)
+	ExecuteFieldQuery(ctx context.Context, field string, value interface{}, limit int) (int, error)
 	InsertDocument(ctx context.Context, doc Document) error
 	InsertDocuments(ctx context.Context, docs []Document) error
 	CountDocuments(ctx context.Context) (int64, error)

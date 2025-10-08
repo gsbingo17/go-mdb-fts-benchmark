@@ -26,11 +26,14 @@ type WorkerPool struct {
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
 	rateLimiter    *rate.Limiter
+	readLimiter    *rate.Limiter
 	config         config.WorkloadConfig
 	metrics        *metrics.MetricsCollector
 	database       database.Database
 	dataGenerator  *generator.DataGenerator
 	workloadGen    *generator.WorkloadGenerator
+	queryLimit     int
+	benchmarkMode  string
 	mu             sync.RWMutex
 	started        bool
 }
@@ -50,11 +53,14 @@ func NewWorkerPool(
 		ctx:            ctx,
 		cancel:         cancel,
 		rateLimiter:    rateLimiter,
+		readLimiter:    rateLimiter,
 		config:         cfg,
 		metrics:        metricsCollector,
 		database:       db,
 		dataGenerator:  generator.NewDataGenerator(time.Now().UnixNano()),
 		workloadGen:    generator.NewWorkloadGenerator(time.Now().UnixNano()),
+		queryLimit:     cfg.QueryResultLimit,
+		benchmarkMode:  cfg.BenchmarkMode,
 		readers:        make([]*ReadWorker, 0),
 		writers:        make([]*WriteWorker, 0),
 		readerContexts: make([]context.CancelFunc, 0),
@@ -92,15 +98,18 @@ func (wp *WorkerPool) Start() error {
 		readWorkerCount--
 	}
 
-	// Create read workers
+	// Create read workers with unique workload generators for cache reduction
 	for i := 0; i < readWorkerCount; i++ {
+		// CACHE REDUCTION: Each worker gets unique workload generator with different seed
+		workerWorkloadGen := generator.NewWorkloadGenerator(time.Now().UnixNano() + int64(i)*1000000)
 		worker := NewReadWorker(
 			i,
 			wp.database,
-			wp.workloadGen,
+			workerWorkloadGen,
 			wp.metrics,
-			wp.rateLimiter,
-			wp.config.QueryResultLimit,
+			wp.readLimiter,
+			wp.queryLimit,
+			wp.benchmarkMode,
 		)
 		wp.readers = append(wp.readers, worker)
 	}
@@ -199,16 +208,19 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 	readWorkerCount := int(float64(additionalWorkers) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
 	writeWorkerCount := additionalWorkers - readWorkerCount
 
-	// Add read workers
+	// Add read workers with unique workload generators for cache reduction
 	for i := 0; i < readWorkerCount; i++ {
 		workerID := len(wp.readers) + i
+		// CACHE REDUCTION: Create unique workload generator for scaled workers too
+		workerWorkloadGen := generator.NewWorkloadGenerator(time.Now().UnixNano() + int64(workerID)*1000000)
 		worker := NewReadWorker(
 			workerID,
 			wp.database,
-			wp.workloadGen,
+			workerWorkloadGen,
 			wp.metrics,
 			wp.rateLimiter,
 			wp.config.QueryResultLimit,
+			wp.benchmarkMode,
 		)
 		wp.readers = append(wp.readers, worker)
 
