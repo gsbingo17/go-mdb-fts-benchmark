@@ -1,0 +1,51 @@
+# MongoDB Operation-Count Benchmark Configuration
+database:
+  type: "mongodb"
+  uri: "mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000"
+  database: "benchmark"
+  collection: "documents"
+  max_pool_size: 100
+  min_pool_size: 5
+  max_conn_idle_time: 60
+  connect_timeout_ms: 30000
+  socket_timeout_ms: 120000
+
+workload:
+  benchmark_mode: "text_search"  # "text_search" or "field_query"
+  
+  # Warmup phase (optional - set to 0 to skip)
+  warmup_operations: 100000  # 10K operations for warmup (8K reads + 2K writes with 80/20 ratio)
+  
+  # Main measurement phase
+  target_operations: 100000  # 1M total operations (800K reads + 200K writes)
+  
+  read_write_ratio:
+    read_percent: 0
+    write_percent: 100
+  
+  # Fixed worker pool (no auto-scaling)
+  worker_count: 50
+  
+  # Dataset
+  dataset_size: 1000000
+  query_result_limit: 50
+
+metrics:
+  collection_interval: "10s"
+  export_interval: "60s"  # Export progress every 60 seconds
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 8080
+
+cost:
+  provider: "atlas"
+  currency_code: "USD"
+  calculation_mode: "estimate"  # Simple cost estimation from config
+  atlas:
+    public_key: "dummy"
+    private_key: "dummy"
+    group_id: "dummy-group-id"
+    cluster_name: "test-cluster"
+    hourly_cost: 0.10  # M30 cluster cost per hour
+    storage_cost_per_gb: 0

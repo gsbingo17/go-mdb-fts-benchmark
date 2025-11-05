@@ -4,9 +4,8 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/time/rate"
 
 	"mongodb-benchmarking-tool/internal/config"
 	"mongodb-benchmarking-tool/internal/database"
@@ -25,8 +24,14 @@ type WorkerPool struct {
 	ctx            context.Context
 	cancel         context.CancelFunc
 	wg             sync.WaitGroup
-	rateLimiter    *rate.Limiter
-	readLimiter    *rate.Limiter
+	
+	// Operation counting (atomic counters)
+	targetReadOps     int64
+	targetWriteOps    int64
+	completedReadOps  int64
+	completedWriteOps int64
+	completionChan    chan struct{}
+	
 	config         config.WorkloadConfig
 	metrics        *metrics.MetricsCollector
 	database       database.Database
@@ -46,14 +51,10 @@ func NewWorkerPool(
 ) *WorkerPool {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Create rate limiter for QPS control
-	rateLimiter := rate.NewLimiter(rate.Limit(cfg.TargetQPS), cfg.TargetQPS/10)
-
 	return &WorkerPool{
 		ctx:            ctx,
 		cancel:         cancel,
-		rateLimiter:    rateLimiter,
-		readLimiter:    rateLimiter,
+		completionChan: make(chan struct{}),
 		config:         cfg,
 		metrics:        metricsCollector,
 		database:       db,
@@ -107,7 +108,7 @@ func (wp *WorkerPool) Start() error {
 			wp.database,
 			workerWorkloadGen,
 			wp.metrics,
-			wp.readLimiter,
+			wp,
 			wp.queryLimit,
 			wp.benchmarkMode,
 		)
@@ -123,7 +124,7 @@ func (wp *WorkerPool) Start() error {
 			wp.database,
 			workerDataGen,
 			wp.metrics,
-			wp.rateLimiter,
+			wp,
 		)
 		wp.writers = append(wp.writers, worker)
 	}
@@ -168,280 +169,104 @@ func (wp *WorkerPool) Start() error {
 
 // Stop gracefully stops all workers
 func (wp *WorkerPool) Stop() {
+	wp.mu.Lock()
 	wp.cancel()
+	wp.started = false // Reset started flag so pool can be restarted
+	wp.mu.Unlock()
+	
 	wp.wg.Wait()
-}
-
-// ScaleWorkers dynamically adjusts the number of workers
-func (wp *WorkerPool) ScaleWorkers(newWorkerCount int) error {
-	wp.mu.RLock()
-	currentCount := len(wp.readers) + len(wp.writers)
-	wp.mu.RUnlock()
-
-	if newWorkerCount > currentCount {
-		// Scale up
-		return wp.scaleUp(newWorkerCount - currentCount)
-	} else if newWorkerCount < currentCount {
-		// Scale down
-		return wp.scaleDown(currentCount - newWorkerCount)
-	}
-
-	return nil // No change needed
-}
-
-// scaleUp adds more workers
-func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
-	if additionalWorkers <= 0 {
-		return nil
-	}
-
+	
+	// Create new context for next start
+	wp.ctx, wp.cancel = context.WithCancel(context.Background())
+	
+	// Clear worker slices for fresh start
 	wp.mu.Lock()
-	defer wp.mu.Unlock()
+	wp.readers = make([]*ReadWorker, 0)
+	wp.writers = make([]*WriteWorker, 0)
+	wp.readerContexts = make([]context.CancelFunc, 0)
+	wp.writerContexts = make([]context.CancelFunc, 0)
+	wp.readerWGs = make([]*sync.WaitGroup, 0)
+	wp.writerWGs = make([]*sync.WaitGroup, 0)
+	wp.wg = sync.WaitGroup{}
+	wp.mu.Unlock()
+}
 
-	currentWorkers := len(wp.readers) + len(wp.writers)
-	currentQPS := wp.config.TargetQPS
-	newWorkerCount := currentWorkers + additionalWorkers
-
-	// Calculate proportional QPS increase
-	newQPS := int(float64(currentQPS) * float64(newWorkerCount) / float64(currentWorkers))
-
-	readWorkerCount := int(float64(additionalWorkers) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
-	writeWorkerCount := additionalWorkers - readWorkerCount
-
-	// Add read workers with unique workload generators for cache reduction
-	for i := 0; i < readWorkerCount; i++ {
-		workerID := len(wp.readers) + i
-		// CACHE REDUCTION: Create unique workload generator for scaled workers too
-		workerWorkloadGen := generator.NewWorkloadGenerator(time.Now().UnixNano() + int64(workerID)*1000000)
-		worker := NewReadWorker(
-			workerID,
-			wp.database,
-			workerWorkloadGen,
-			wp.metrics,
-			wp.rateLimiter,
-			wp.config.QueryResultLimit,
-			wp.benchmarkMode,
-		)
-		wp.readers = append(wp.readers, worker)
-
-		// Create individual context and waitgroup for this worker
-		workerCtx, cancel := context.WithCancel(wp.ctx)
-		wp.readerContexts = append(wp.readerContexts, cancel)
-
-		workerWG := &sync.WaitGroup{}
-		wp.readerWGs = append(wp.readerWGs, workerWG)
-
-		wp.wg.Add(1)
-		workerWG.Add(1)
-		go func(w *ReadWorker, ctx context.Context, wg *sync.WaitGroup) {
-			defer wp.wg.Done()
-			defer wg.Done()
-			w.Start(ctx)
-		}(worker, workerCtx, workerWG)
+// StartWithTarget starts the worker pool with specific operation targets
+func (wp *WorkerPool) StartWithTarget(readOps, writeOps int64) error {
+	// Set operation targets atomically (must use atomic since workers read atomically)
+	atomic.StoreInt64(&wp.targetReadOps, readOps)
+	atomic.StoreInt64(&wp.targetWriteOps, writeOps)
+	atomic.StoreInt64(&wp.completedReadOps, 0)
+	atomic.StoreInt64(&wp.completedWriteOps, 0)
+	
+	// Create new completion channel for this run
+	wp.completionChan = make(chan struct{})
+	
+	// Start workers
+	if err := wp.Start(); err != nil {
+		return err
 	}
-
-	// Add write workers
-	for i := 0; i < writeWorkerCount; i++ {
-		workerID := len(wp.writers) + i
-		// Create a unique data generator for each worker to avoid race conditions
-		workerDataGen := generator.NewDataGenerator(time.Now().UnixNano() + int64(workerID))
-		worker := NewWriteWorker(
-			workerID,
-			wp.database,
-			workerDataGen,
-			wp.metrics,
-			wp.rateLimiter,
-		)
-		wp.writers = append(wp.writers, worker)
-
-		// Create individual context and waitgroup for this worker
-		workerCtx, cancel := context.WithCancel(wp.ctx)
-		wp.writerContexts = append(wp.writerContexts, cancel)
-
-		workerWG := &sync.WaitGroup{}
-		wp.writerWGs = append(wp.writerWGs, workerWG)
-
-		wp.wg.Add(1)
-		workerWG.Add(1)
-		go func(w *WriteWorker, ctx context.Context, wg *sync.WaitGroup) {
-			defer wp.wg.Done()
-			defer wg.Done()
-			w.Start(ctx)
-		}(worker, workerCtx, workerWG)
-	}
-
-	// Update rate limiter to increase QPS proportionally
-	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
-	wp.config.TargetQPS = newQPS
-
-	slog.Info("Scale-up completed",
-		"readers_added", readWorkerCount,
-		"writers_added", writeWorkerCount,
-		"total_added", additionalWorkers,
-		"total_readers", len(wp.readers),
-		"total_writers", len(wp.writers),
-		"total_workers", len(wp.readers)+len(wp.writers),
-		"old_qps", currentQPS,
-		"new_qps", newQPS)
-
+	
+	// Start monitoring for completion
+	go wp.monitorCompletion()
+	
 	return nil
 }
 
-// scaleDown removes workers by gracefully shutting them down
-func (wp *WorkerPool) scaleDown(workersToRemove int) error {
-	if workersToRemove <= 0 {
-		return nil
-	}
-
-	wp.mu.Lock()
-
-	// Calculate how many of each type to remove based on current ratio
-	totalWorkers := len(wp.readers) + len(wp.writers)
-	if totalWorkers <= workersToRemove {
-		wp.mu.Unlock()
-		return nil // Don't remove all workers
-	}
-
-	currentQPS := wp.config.TargetQPS
-	newWorkerCount := totalWorkers - workersToRemove
-
-	// Calculate proportional QPS reduction
-	newQPS := int(float64(currentQPS) * float64(newWorkerCount) / float64(totalWorkers))
-	if newQPS < 10 {
-		newQPS = 10 // Minimum QPS
-	}
-
-	readWorkersToRemove := int(float64(workersToRemove) * float64(len(wp.readers)) / float64(totalWorkers))
-	writeWorkersToRemove := workersToRemove - readWorkersToRemove
-
-	var workersToWait []*sync.WaitGroup
-	var workerTypes []string
-
-	// Remove read workers from the end
-	for i := 0; i < readWorkersToRemove && len(wp.readers) > 1; i++ {
-		lastIndex := len(wp.readers) - 1
-
-		// Cancel the worker's context to initiate graceful shutdown
-		if lastIndex < len(wp.readerContexts) {
-			wp.readerContexts[lastIndex]()
-		}
-
-		// Collect waitgroup to wait for actual shutdown
-		if lastIndex < len(wp.readerWGs) {
-			workersToWait = append(workersToWait, wp.readerWGs[lastIndex])
-			workerTypes = append(workerTypes, "read")
-		}
-	}
-
-	// Remove write workers from the end
-	for i := 0; i < writeWorkersToRemove && len(wp.writers) > 1; i++ {
-		lastIndex := len(wp.writers) - 1
-
-		// Cancel the worker's context to initiate graceful shutdown
-		if lastIndex < len(wp.writerContexts) {
-			wp.writerContexts[lastIndex]()
-		}
-
-		// Collect waitgroup to wait for actual shutdown
-		if lastIndex < len(wp.writerWGs) {
-			workersToWait = append(workersToWait, wp.writerWGs[lastIndex])
-			workerTypes = append(workerTypes, "write")
-		}
-	}
-
-	wp.mu.Unlock()
-
-	// Wait for workers to actually stop (with timeout)
-	shutdownTimeout := 10 * time.Second
-	for i, workerWG := range workersToWait {
-		done := make(chan struct{})
-		go func(wg *sync.WaitGroup) {
-			wg.Wait()
-			close(done)
-		}(workerWG)
-
+// monitorCompletion checks if all operations are complete and signals via channel
+func (wp *WorkerPool) monitorCompletion() {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	
+	for {
 		select {
-		case <-done:
-			// Worker stopped successfully
-			slog.Info("Worker stopped successfully", "type", workerTypes[i], "timeout_used", false)
-		case <-time.After(shutdownTimeout):
-			// Worker didn't stop within timeout
-			slog.Warn("Worker shutdown timeout", "type", workerTypes[i], "timeout", shutdownTimeout)
+		case <-wp.ctx.Done():
+			return
+		case <-ticker.C:
+			completedReads := atomic.LoadInt64(&wp.completedReadOps)
+			completedWrites := atomic.LoadInt64(&wp.completedWriteOps)
+			targetReads := atomic.LoadInt64(&wp.targetReadOps)
+			targetWrites := atomic.LoadInt64(&wp.targetWriteOps)
+			
+			if completedReads >= targetReads && completedWrites >= targetWrites {
+				// Signal completion
+				select {
+				case wp.completionChan <- struct{}{}:
+					slog.Info("All operations completed",
+						"read_ops", completedReads,
+						"write_ops", completedWrites,
+						"total_ops", completedReads+completedWrites)
+				default:
+					// Channel already signaled
+				}
+				return
+			}
 		}
 	}
+}
 
-	// Re-acquire mutex to update tracking slices
-	wp.mu.Lock()
+// CompletionSignal returns a channel that signals when all operations are complete
+func (wp *WorkerPool) CompletionSignal() <-chan struct{} {
+	return wp.completionChan
+}
 
-	// Now remove from tracking slices (workers have actually stopped)
-	for i := 0; i < readWorkersToRemove && len(wp.readers) > 1; i++ {
-		lastIndex := len(wp.readers) - 1
+// GetProgress returns current progress toward operation targets
+func (wp *WorkerPool) GetProgress() (completedReads, completedWrites, targetReads, targetWrites int64) {
+	return atomic.LoadInt64(&wp.completedReadOps), 
+	       atomic.LoadInt64(&wp.completedWriteOps), 
+	       atomic.LoadInt64(&wp.targetReadOps), 
+	       atomic.LoadInt64(&wp.targetWriteOps)
+}
 
-		if lastIndex < len(wp.readerContexts) {
-			wp.readerContexts = wp.readerContexts[:lastIndex]
-		}
-		if lastIndex < len(wp.readerWGs) {
-			wp.readerWGs = wp.readerWGs[:lastIndex]
-		}
-
-		wp.readers = wp.readers[:lastIndex]
-	}
-
-	for i := 0; i < writeWorkersToRemove && len(wp.writers) > 1; i++ {
-		lastIndex := len(wp.writers) - 1
-
-		if lastIndex < len(wp.writerContexts) {
-			wp.writerContexts = wp.writerContexts[:lastIndex]
-		}
-		if lastIndex < len(wp.writerWGs) {
-			wp.writerWGs = wp.writerWGs[:lastIndex]
-		}
-
-		wp.writers = wp.writers[:lastIndex]
-	}
-
-	// Update rate limiter to reduce QPS proportionally
-	wp.rateLimiter = rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
-	wp.config.TargetQPS = newQPS
-
-	wp.mu.Unlock()
-
-	slog.Info("Scale-down completed",
-		"readers_removed", readWorkersToRemove,
-		"writers_removed", writeWorkersToRemove,
-		"total_removed", readWorkersToRemove+writeWorkersToRemove,
-		"remaining_readers", len(wp.readers),
-		"remaining_writers", len(wp.writers),
-		"total_remaining", len(wp.readers)+len(wp.writers),
-		"old_qps", currentQPS,
-		"new_qps", newQPS)
-
+// ScaleWorkers is deprecated - not used in operation-count mode
+func (wp *WorkerPool) ScaleWorkers(newWorkerCount int) error {
+	slog.Warn("ScaleWorkers called but not supported in operation-count mode")
 	return nil
 }
 
-// UpdateRateLimit changes the QPS target
+// UpdateRateLimit is deprecated - not used in operation-count mode
 func (wp *WorkerPool) UpdateRateLimit(newQPS int) {
-	wp.mu.Lock()
-	defer wp.mu.Unlock()
-
-	// Create new rate limiter
-	newRateLimiter := rate.NewLimiter(rate.Limit(newQPS), newQPS/10)
-	wp.rateLimiter = newRateLimiter
-	wp.config.TargetQPS = newQPS
-
-	// Update all existing workers to use the new rate limiter
-	for _, reader := range wp.readers {
-		reader.rateLimiter = newRateLimiter
-	}
-
-	for _, writer := range wp.writers {
-		writer.rateLimiter = newRateLimiter
-	}
-
-	slog.Info("Rate limit updated",
-		"new_qps", newQPS,
-		"readers_updated", len(wp.readers),
-		"writers_updated", len(wp.writers))
+	slog.Warn("UpdateRateLimit called but not supported in operation-count mode")
 }
 
 // GetWorkerStatus returns current worker status
@@ -451,14 +276,12 @@ func (wp *WorkerPool) GetWorkerStatus() WorkerStatus {
 
 	readWorkers := len(wp.readers)
 	writeWorkers := len(wp.writers)
-	targetQPS := wp.config.TargetQPS
 	isRunning := wp.ctx.Err() == nil
 
 	return WorkerStatus{
 		ReadWorkers:  readWorkers,
 		WriteWorkers: writeWorkers,
 		TotalWorkers: readWorkers + writeWorkers,
-		TargetQPS:    targetQPS,
 		IsRunning:    isRunning,
 	}
 }
@@ -468,6 +291,5 @@ type WorkerStatus struct {
 	ReadWorkers  int  `json:"read_workers"`
 	WriteWorkers int  `json:"write_workers"`
 	TotalWorkers int  `json:"total_workers"`
-	TargetQPS    int  `json:"target_qps"`
 	IsRunning    bool `json:"is_running"`
 }

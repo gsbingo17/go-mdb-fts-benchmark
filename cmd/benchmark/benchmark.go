@@ -15,18 +15,15 @@ import (
 
 // BenchmarkRunner orchestrates the complete benchmarking process
 type BenchmarkRunner struct {
-	config               *config.Config
-	database             database.Database
-	metricsCollector     *metrics.MetricsCollector
-	costCalculator       *metrics.CostCalculator
-	exporter             *metrics.Exporter
-	workloadController   *worker.WorkloadController
-	saturationController *metrics.SaturationController
-	costTracker          metrics.RealTimeCostTracker
+	config             *config.Config
+	database           database.Database
+	metricsCollector   *metrics.MetricsCollector
+	costCalculator     *metrics.CostCalculator
+	exporter           *metrics.Exporter
+	workloadController *worker.WorkloadController
+	costTracker        metrics.RealTimeCostTracker
 
-	startTime            time.Time
-	measurementStartTime time.Time
-	measurementActive    bool
+	startTime time.Time
 }
 
 // NewBenchmarkRunner creates a new benchmark runner
@@ -64,14 +61,6 @@ func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 	// Create workload controller
 	workloadController := worker.NewWorkloadController(cfg.Workload, db, metricsCollector)
 
-	// Create enhanced database client with monitoring
-	monitor, err := metrics.CreateDatabaseMonitor(*cfg)
-	if err != nil {
-		slog.Warn("Failed to create database monitor, using basic metrics", "error", err)
-	} else {
-		db = metrics.NewEnhancedDatabaseClient(db, monitor)
-	}
-
 	// Create cost tracker
 	costTracker, err := metrics.CreateRealTimeCostTracker(*cfg)
 	if err != nil {
@@ -88,17 +77,6 @@ func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 		costTracker:        costTracker,
 	}
 
-	// Create saturation controller with callback
-	if monitor != nil {
-		runner.saturationController = metrics.NewSaturationController(
-			monitor,
-			cfg.Workload,
-			runner.handleWorkloadAdjustment,
-		)
-		// Set up measurement callback for stability-based metrics reset
-		runner.saturationController.SetMeasurementCallback(runner.handleMeasurementStateChange)
-	}
-
 	return runner, nil
 }
 
@@ -107,8 +85,8 @@ func (br *BenchmarkRunner) Run(ctx context.Context) error {
 	br.startTime = time.Now()
 
 	slog.Info("Starting benchmark run",
-		"duration", br.config.Workload.Duration,
-		"target_qps", br.config.Workload.TargetQPS,
+		"target_operations", br.config.Workload.TargetOperations,
+		"warmup_operations", br.config.Workload.WarmupOperations,
 		"workers", br.config.Workload.WorkerCount,
 		"database", br.config.Database.Type)
 
@@ -122,15 +100,13 @@ func (br *BenchmarkRunner) Run(ctx context.Context) error {
 		return fmt.Errorf("data setup failed: %w", err)
 	}
 
-	// Phase 3: Warmup period
+	// Phase 3: Warmup period (if configured)
 	if err := br.warmupPhase(ctx); err != nil {
 		return fmt.Errorf("warmup failed: %w", err)
 	}
 
-	// Phase 4: Start monitoring and control systems
-	if err := br.startMonitoring(ctx); err != nil {
-		return fmt.Errorf("monitoring startup failed: %w", err)
-	}
+	// Phase 4: Start metrics export
+	go br.metricsExportLoop(ctx)
 
 	// Phase 5: Execute main benchmark
 	if err := br.executeBenchmark(ctx); err != nil {
@@ -240,59 +216,78 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 	return nil
 }
 
-// warmupPhase runs a brief warmup to stabilize the system
+// warmupPhase runs warmup operations if configured
 func (br *BenchmarkRunner) warmupPhase(ctx context.Context) error {
-	if br.config.Workload.WarmupDuration == 0 {
+	if br.config.Workload.WarmupOperations == 0 {
+		slog.Info("Skipping warmup phase (warmup_operations = 0)")
 		return nil
 	}
 
-	slog.Info("Starting warmup phase", "duration", br.config.Workload.WarmupDuration)
+	slog.Info("Starting warmup phase", "operations", br.config.Workload.WarmupOperations)
 
-	warmupCtx, cancel := context.WithTimeout(ctx, br.config.Workload.WarmupDuration)
-	defer cancel()
+	// Calculate warmup read/write operations based on ratio
+	totalWarmup := br.config.Workload.WarmupOperations
+	readPct := float64(br.config.Workload.ReadWriteRatio.ReadPercent) / 100.0
+	warmupReadOps := int64(float64(totalWarmup) * readPct)
+	warmupWriteOps := totalWarmup - warmupReadOps
 
-	// Start workload at reduced intensity
-	if err := br.workloadController.Start(); err != nil {
-		return err
+	// Start workers with warmup target
+	if err := br.workloadController.StartWithTarget(warmupReadOps, warmupWriteOps); err != nil {
+		return fmt.Errorf("failed to start warmup: %w", err)
 	}
 
-	// Wait for warmup to complete
-	<-warmupCtx.Done()
+	// Wait for warmup completion with progress logging
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
 
-	// Reset metrics after warmup
-	br.metricsCollector.Reset()
-
-	slog.Info("Warmup phase completed")
-	return nil
-}
-
-// startMonitoring begins all monitoring and control systems
-func (br *BenchmarkRunner) startMonitoring(ctx context.Context) error {
-	slog.Info("Starting monitoring and control systems")
-
-	// Start saturation controller if available
-	if br.saturationController != nil {
-		go br.saturationController.Start(ctx)
-		slog.Info("CPU saturation controller started")
+	for {
+		select {
+		case <-ctx.Done():
+			br.workloadController.Stop()
+			return ctx.Err()
+		case <-br.workloadController.CompletionSignal():
+			slog.Info("Warmup phase completed",
+				"operations", totalWarmup,
+				"duration", time.Since(br.startTime))
+			br.workloadController.Stop()
+			time.Sleep(1 * time.Second) // Brief pause between phases
+			br.metricsCollector.Reset() // Reset metrics after warmup
+			return nil
+		case <-ticker.C:
+			readCompleted, writeCompleted, readTarget, writeTarget := br.workloadController.GetProgress()
+			totalCompleted := readCompleted + writeCompleted
+			progressPct := float64(totalCompleted) / float64(totalWarmup) * 100
+			slog.Info("Warmup progress",
+				"completed", totalCompleted,
+				"target", totalWarmup,
+				"progress", fmt.Sprintf("%.1f%%", progressPct),
+				"reads", fmt.Sprintf("%d/%d", readCompleted, readTarget),
+				"writes", fmt.Sprintf("%d/%d", writeCompleted, writeTarget))
+		}
 	}
-
-	// Start metrics export routine
-	go br.metricsExportLoop(ctx)
-	slog.Info("Metrics export loop started")
-
-	return nil
 }
+
 
 // executeBenchmark runs the main benchmark workload
 func (br *BenchmarkRunner) executeBenchmark(ctx context.Context) error {
-	benchmarkCtx, cancel := context.WithTimeout(ctx, br.config.Workload.Duration)
-	defer cancel()
+	slog.Info("Starting main benchmark execution",
+		"target_operations", br.config.Workload.TargetOperations)
 
-	slog.Info("Starting main benchmark execution")
+	// Calculate read/write operations based on ratio
+	totalOps := br.config.Workload.TargetOperations
+	readPct := float64(br.config.Workload.ReadWriteRatio.ReadPercent) / 100.0
+	targetReadOps := int64(float64(totalOps) * readPct)
+	targetWriteOps := totalOps - targetReadOps
 
-	// Ensure workload is running (may already be started from warmup)
-	if err := br.workloadController.Start(); err != nil {
-		return err
+	slog.Info("Operation targets",
+		"total", totalOps,
+		"reads", targetReadOps,
+		"writes", targetWriteOps,
+		"ratio", fmt.Sprintf("%d:%d", br.config.Workload.ReadWriteRatio.ReadPercent, br.config.Workload.ReadWriteRatio.WritePercent))
+
+	// Start workers with operation targets
+	if err := br.workloadController.StartWithTarget(targetReadOps, targetWriteOps); err != nil {
+		return fmt.Errorf("failed to start benchmark: %w", err)
 	}
 
 	// Monitor benchmark progress
@@ -301,12 +296,15 @@ func (br *BenchmarkRunner) executeBenchmark(ctx context.Context) error {
 
 	for {
 		select {
-		case <-benchmarkCtx.Done():
-			slog.Info("Benchmark duration completed")
-			return nil
 		case <-ctx.Done():
 			slog.Info("Benchmark cancelled")
+			br.workloadController.Stop()
 			return ctx.Err()
+		case <-br.workloadController.CompletionSignal():
+			slog.Info("All operations completed",
+				"total_operations", totalOps,
+				"duration", time.Since(br.startTime))
+			return nil
 		case <-ticker.C:
 			br.logProgress()
 		}
@@ -315,39 +313,23 @@ func (br *BenchmarkRunner) executeBenchmark(ctx context.Context) error {
 
 // logProgress logs current benchmark progress
 func (br *BenchmarkRunner) logProgress() {
-	var metrics metrics.Metrics
-	var elapsedTime time.Duration
-	var phaseInfo string
-
-	if br.measurementActive && !br.measurementStartTime.IsZero() {
-		// In measurement phase - use measurement duration for accurate QPS calculation
-		elapsedTime = time.Since(br.measurementStartTime)
-		totalElapsed := time.Since(br.startTime)
-
-		// Get metrics with measurement duration for accurate QPS
-		metrics = br.metricsCollector.GetMetricsWithCustomDuration(elapsedTime)
-		phaseInfo = fmt.Sprintf("measurement=%v total=%v", elapsedTime, totalElapsed)
-	} else {
-		// In ramp-up phase - use default duration calculation
-		metrics = br.metricsCollector.GetCurrentMetrics()
-		elapsedTime = metrics.Duration
-		phaseInfo = fmt.Sprintf("total=%v", elapsedTime)
-	}
-
-	var saturationStatus string
-	if br.saturationController != nil {
-		status := br.saturationController.GetStatus()
-		saturationStatus = fmt.Sprintf("cpu=%.1f%% target=%.1f%% stable=%v",
-			status.CurrentCPU, status.TargetCPU, status.IsStable)
-	}
+	metrics := br.metricsCollector.GetCurrentMetrics()
+	readCompleted, writeCompleted, readTarget, writeTarget := br.workloadController.GetProgress()
+	
+	totalCompleted := readCompleted + writeCompleted
+	totalTarget := readTarget + writeTarget
+	progressPct := float64(totalCompleted) / float64(totalTarget) * 100
 
 	slog.Info("Benchmark progress",
-		"elapsed", phaseInfo,
-		"total_ops", metrics.TotalOps,
+		"elapsed", time.Since(br.startTime),
+		"completed_ops", totalCompleted,
+		"target_ops", totalTarget,
+		"progress", fmt.Sprintf("%.1f%%", progressPct),
+		"reads", fmt.Sprintf("%d/%d", readCompleted, readTarget),
+		"writes", fmt.Sprintf("%d/%d", writeCompleted, writeTarget),
 		"read_qps", fmt.Sprintf("%.1f", metrics.ReadQPS),
 		"write_qps", fmt.Sprintf("%.1f", metrics.WriteQPS),
-		"error_rate", fmt.Sprintf("%.2f%%", metrics.ErrorRate*100),
-		"saturation", saturationStatus)
+		"error_rate", fmt.Sprintf("%.2f%%", metrics.ErrorRate*100))
 }
 
 // metricsExportLoop periodically exports metrics
@@ -367,25 +349,43 @@ func (br *BenchmarkRunner) metricsExportLoop(ctx context.Context) {
 
 // exportCurrentMetrics exports current metrics
 func (br *BenchmarkRunner) exportCurrentMetrics() {
-	// Use consistent duration calculation logic with logProgress()
-	var metrics metrics.Metrics
-	if br.measurementActive && !br.measurementStartTime.IsZero() {
-		// In measurement phase - use measurement duration for accurate QPS calculation
-		elapsedTime := time.Since(br.measurementStartTime)
-		metrics = br.metricsCollector.GetMetricsWithCustomDuration(elapsedTime)
-	} else {
-		// In ramp-up or stabilization phase - use default duration calculation
-		metrics = br.metricsCollector.GetCurrentMetrics()
+	currentMetrics := br.metricsCollector.GetCurrentMetrics()
+	costMetrics := br.calculateCurrentCost(currentMetrics)
+
+	// Create simplified system state (no saturation tracking)
+	systemState := metrics.SystemState{
+		CPUUtilization:         0.0,
+		TargetCPU:              0.0,
+		IsStable:               true, // Always stable in operation-count mode
+		StabilityDuration:      time.Since(br.startTime),
+		SaturationStatus:       "operation_count_mode",
+		CPUDeviationFromTarget: 0.0,
+		StabilityConfidence:    "n/a",
+		HistoryPoints:          0,
+		MemoryUtilization:      0.0,
+		CacheUtilization:       0.0,
+		ConnectionCount:        0,
+		Timestamp:              time.Now(),
 	}
 
-	costMetrics := br.calculateCurrentCost(metrics)
-	systemState := br.getCurrentSystemState()
-	phaseMetadata := br.getCurrentPhaseMetadata()
+	// Create simplified phase metadata (no saturation phases)
+	readCompleted, writeCompleted, readTarget, writeTarget := br.workloadController.GetProgress()
+	phaseMetadata := metrics.PhaseMetadata{
+		CurrentPhase:           metrics.PhaseRampup, // Always in execution phase
+		BenchmarkStartTime:     &br.startTime,
+		TotalBenchmarkDuration: metrics.FormatDurationHuman(time.Since(br.startTime)),
+		RampupMetadata: &metrics.RampupMetadata{
+			TargetCPU:          0.0,
+			CurrentCPU:         0.0,
+			LastAdjustmentType: "operation_count",
+			AdjustmentReason: fmt.Sprintf("Progress: %d/%d ops (%.1f%%)",
+				readCompleted+writeCompleted,
+				readTarget+writeTarget,
+				float64(readCompleted+writeCompleted)/float64(readTarget+writeTarget)*100),
+		},
+	}
 
-	// Validate state consistency before exporting
-	br.validateStateConsistency(systemState, phaseMetadata)
-
-	if err := br.exporter.ExportMetrics(metrics, costMetrics, systemState, phaseMetadata); err != nil {
+	if err := br.exporter.ExportMetrics(currentMetrics, costMetrics, systemState, phaseMetadata); err != nil {
 		slog.Error("Failed to export metrics", "error", err)
 	}
 }
@@ -411,221 +411,6 @@ func (br *BenchmarkRunner) calculateCurrentCost(m metrics.Metrics) metrics.CostM
 	return br.costCalculator.CalculateCost(m)
 }
 
-// getCurrentPhaseMetadata determines the current benchmark phase and creates metadata
-func (br *BenchmarkRunner) getCurrentPhaseMetadata() metrics.PhaseMetadata {
-	// Get status once to ensure consistency between phase detection and metadata
-	var status metrics.SaturationStatus
-	var currentPhase metrics.BenchmarkPhase
-
-	if br.saturationController != nil {
-		status = br.saturationController.GetStatus()
-		currentPhase = br.getCurrentPhaseWithStatus(status)
-	} else {
-		currentPhase = metrics.PhaseRampup
-	}
-
-	metadata := metrics.PhaseMetadata{
-		CurrentPhase:           currentPhase,
-		BenchmarkStartTime:     &br.startTime,
-		TotalBenchmarkDuration: metrics.FormatDurationHuman(time.Since(br.startTime)),
-	}
-
-	if br.saturationController != nil {
-
-		switch currentPhase {
-		case metrics.PhaseRampup:
-			metadata.RampupMetadata = &metrics.RampupMetadata{
-				TargetCPU:          status.TargetCPU,
-				CurrentCPU:         status.CurrentCPU,
-				LastAdjustmentType: "qps_adjustment",
-				AdjustmentReason:   fmt.Sprintf("CPU %.1f%% targeting %.1f%%", status.CurrentCPU, status.TargetCPU),
-			}
-
-		case metrics.PhaseStabilization:
-			// Calculate stability progress and estimated completion time
-			stabilityRequired := br.config.Workload.StabilityWindow
-			stabilityElapsed := status.StabilityDuration
-			progressPct := (float64(stabilityElapsed) / float64(stabilityRequired)) * 100
-			if progressPct > 100 {
-				progressPct = 100
-			}
-
-			estimatedCompletion := ""
-			if progressPct < 100 {
-				remaining := stabilityRequired - stabilityElapsed
-				estimatedCompletion = time.Now().Add(remaining).Format("15:04:05")
-			}
-
-			metadata.StabilizationMetadata = &metrics.StabilizationMetadata{
-				StabilityStartTime:        time.Now().Add(-stabilityElapsed),
-				StabilityElapsed:          metrics.FormatDurationHuman(stabilityElapsed),
-				StabilityRequired:         metrics.FormatDurationHuman(stabilityRequired),
-				StabilityProgressPct:      progressPct,
-				EstimatedMeasurementStart: estimatedCompletion,
-				CPUInTargetRange:          status.IsStable,
-			}
-
-		case metrics.PhaseMeasurement:
-			if !br.measurementStartTime.IsZero() {
-				metadata.MeasurementStartTime = &br.measurementStartTime
-				metadata.MeasurementDuration = metrics.FormatDurationHuman(time.Since(br.measurementStartTime))
-			}
-
-			confidence := "low"
-			if status.StabilityDuration > 5*time.Minute {
-				confidence = "high"
-			} else if status.StabilityDuration > 2*time.Minute {
-				confidence = "medium"
-			}
-
-			metadata.MeasurementMetadata = &metrics.MeasurementMetadata{
-				MeasurementStartTime: br.measurementStartTime,
-				CleanMetricsActive:   br.measurementActive,
-				MetricsResetAt:       br.measurementStartTime,
-				StabilityConfidence:  confidence,
-				DataQuality:          "clean_stable_metrics",
-			}
-		}
-	} else {
-		// No saturation controller - assume basic rampup
-		metadata.RampupMetadata = &metrics.RampupMetadata{
-			TargetCPU:          br.config.Workload.SaturationTarget,
-			CurrentCPU:         0.0,
-			LastAdjustmentType: "manual",
-			AdjustmentReason:   "saturation controller disabled",
-		}
-	}
-
-	return metadata
-}
-
-// getCurrentPhase determines the current benchmark phase
-func (br *BenchmarkRunner) getCurrentPhase() metrics.BenchmarkPhase {
-	if br.saturationController != nil {
-		status := br.saturationController.GetStatus()
-		return br.getCurrentPhaseWithStatus(status)
-	}
-
-	// No saturation controller
-	slog.Debug("Phase: rampup (no saturation controller)")
-	return metrics.PhaseRampup
-}
-
-// getCurrentPhaseWithStatus determines the phase using a provided status to ensure consistency
-func (br *BenchmarkRunner) getCurrentPhaseWithStatus(status metrics.SaturationStatus) metrics.BenchmarkPhase {
-	// Debug logging to trace phase detection logic
-	slog.Debug("Phase detection",
-		"is_stable", status.IsStable,
-		"measurement_active", br.measurementActive,
-		"stability_duration", status.StabilityDuration,
-		"current_cpu", status.CurrentCPU,
-		"target_cpu", status.TargetCPU)
-
-	// CRITICAL FIX: Measurement phase takes priority over stability status
-	// Once measurement starts, stay in measurement phase even if stability fluctuates briefly
-	if br.measurementActive {
-		slog.Debug("Phase: measurement (measurement active - highest priority)")
-		return metrics.PhaseMeasurement
-	}
-
-	if !status.IsStable {
-		slog.Debug("Phase: rampup (not stable)")
-		return metrics.PhaseRampup
-	}
-
-	// CPU stable but measurement not started = stabilization
-	slog.Debug("Phase: stabilization (stable but measurement not active)")
-	return metrics.PhaseStabilization
-}
-
-// getCurrentSystemState retrieves current system state from saturation controller
-func (br *BenchmarkRunner) getCurrentSystemState() metrics.SystemState {
-	if br.saturationController != nil {
-		status := br.saturationController.GetStatus()
-
-		// Determine stability confidence
-		confidence := "low"
-		if status.IsStable {
-			if status.StabilityDuration > 5*time.Minute {
-				confidence = "high"
-			} else if status.StabilityDuration > 2*time.Minute {
-				confidence = "medium"
-			}
-		}
-
-		// Determine saturation status
-		saturationStatus := "adjusting"
-		if status.IsStable {
-			saturationStatus = "stable"
-		} else if status.CurrentCPU > 0 {
-			if status.CurrentCPU < status.TargetCPU-5 {
-				saturationStatus = "scaling_up"
-			} else if status.CurrentCPU > status.TargetCPU+5 {
-				saturationStatus = "scaling_down"
-			} else {
-				saturationStatus = "stabilizing"
-			}
-		}
-
-		// Collect additional resource metrics from the enhanced database client
-		var memoryUtilization, cacheUtilization float64
-		var connectionCount int64
-
-		if enhancedDB, ok := br.database.(*metrics.EnhancedDatabaseClient); ok {
-			monitor := enhancedDB.GetMonitor()
-			ctx := context.Background()
-
-			// Get memory utilization
-			if memory, err := monitor.GetMemoryUtilization(ctx); err == nil {
-				memoryUtilization = memory
-			}
-
-			// Get cache utilization (may not be available for all providers)
-			if cache, err := monitor.GetCacheUtilization(ctx); err == nil {
-				cacheUtilization = cache
-			}
-
-			// Get connection count
-			if connections, err := monitor.GetConnectionCount(ctx); err == nil {
-				connectionCount = connections
-			}
-		}
-
-		return metrics.SystemState{
-			CPUUtilization:         status.CurrentCPU,
-			TargetCPU:              status.TargetCPU,
-			IsStable:               status.IsStable,
-			StabilityDuration:      status.StabilityDuration,
-			SaturationStatus:       saturationStatus,
-			CPUDeviationFromTarget: status.CurrentCPU - status.TargetCPU,
-			StabilityConfidence:    confidence,
-			HistoryPoints:          status.HistoryPoints,
-
-			// Enhanced resource metrics
-			MemoryUtilization: memoryUtilization,
-			CacheUtilization:  cacheUtilization,
-			ConnectionCount:   connectionCount,
-
-			Timestamp: time.Now(),
-		}
-	}
-
-	// Return default system state if no saturation controller
-	return metrics.SystemState{
-		CPUUtilization:         0.0,
-		TargetCPU:              br.config.Workload.SaturationTarget,
-		IsStable:               false,
-		StabilityDuration:      0,
-		SaturationStatus:       "disabled",
-		CPUDeviationFromTarget: 0.0,
-		StabilityConfidence:    "none",
-		HistoryPoints:          0,
-		MemoryUtilization:      0.0,
-		CacheUtilization:       0.0,
-		ConnectionCount:        0,
-		Timestamp:              time.Now(),
-	}
-}
 
 // finalizeResults generates final benchmark results
 func (br *BenchmarkRunner) finalizeResults(ctx context.Context) error {
@@ -666,79 +451,6 @@ func (br *BenchmarkRunner) logFinalResults(metrics metrics.Metrics, costMetrics 
 		"cost_per_write", fmt.Sprintf("$%.8f", costMetrics.CostPerWrite),
 		"hourly_rate", fmt.Sprintf("$%.4f", costMetrics.HourlyCost),
 		"provider", costMetrics.Provider)
-
-	if br.saturationController != nil {
-		status := br.saturationController.GetStatus()
-		slog.Info("Saturation Results",
-			"final_cpu", fmt.Sprintf("%.1f%%", status.CurrentCPU),
-			"target_cpu", fmt.Sprintf("%.1f%%", status.TargetCPU),
-			"achieved_stability", status.IsStable,
-			"stability_duration", status.StabilityDuration)
-	}
-}
-
-// handleMeasurementStateChange handles measurement state changes from saturation controller
-func (br *BenchmarkRunner) handleMeasurementStateChange(active bool) {
-	if active {
-		// Saturation has stabilized - reset metrics to start clean measurement
-		// Order is critical: Reset first, then set time, then set flag for atomic transition
-		br.metricsCollector.Reset()          // ← Reset counters first
-		br.measurementStartTime = time.Now() // ← Set measurement start time
-		br.measurementActive = active        // ← Finally activate measurement flag
-		slog.Info("Saturation achieved stability - starting measurement phase")
-	} else {
-		// Saturation became unstable - stop clean measurement
-		br.measurementActive = active         // ← Deactivate measurement flag first
-		br.measurementStartTime = time.Time{} // ← Reset measurement start time
-		slog.Info("Saturation lost stability - ending measurement phase")
-	}
-}
-
-// validateStateConsistency checks for inconsistencies between system state and phase metadata
-func (br *BenchmarkRunner) validateStateConsistency(systemState metrics.SystemState, phaseMetadata metrics.PhaseMetadata) {
-	// Check for the specific issue from the log: stable system but rampup phase
-	if systemState.IsStable && systemState.StabilityDuration > time.Minute && phaseMetadata.CurrentPhase == metrics.PhaseRampup {
-		slog.Warn("STATE INCONSISTENCY DETECTED",
-			"issue", "system_stable_but_rampup_phase",
-			"system_stable", systemState.IsStable,
-			"stability_duration", systemState.StabilityDuration,
-			"reported_phase", phaseMetadata.CurrentPhase,
-			"measurement_active", br.measurementActive,
-			"cpu_utilization", systemState.CPUUtilization,
-			"target_cpu", systemState.TargetCPU,
-			"saturation_status", systemState.SaturationStatus)
-	}
-
-	// Check for other potential inconsistencies
-	if systemState.IsStable && phaseMetadata.CurrentPhase == metrics.PhaseRampup && systemState.StabilityDuration > 30*time.Second {
-		slog.Debug("State transition delay detected",
-			"stable_duration", systemState.StabilityDuration,
-			"phase", phaseMetadata.CurrentPhase,
-			"measurement_active", br.measurementActive)
-	}
-
-	// Validate measurement phase consistency
-	if br.measurementActive && phaseMetadata.CurrentPhase != metrics.PhaseMeasurement {
-		slog.Warn("MEASUREMENT STATE INCONSISTENCY",
-			"measurement_active", br.measurementActive,
-			"reported_phase", phaseMetadata.CurrentPhase,
-			"expected_phase", metrics.PhaseMeasurement)
-	}
-
-	// Validate stabilization phase metadata
-	if phaseMetadata.CurrentPhase == metrics.PhaseStabilization && phaseMetadata.StabilizationMetadata != nil {
-		if !phaseMetadata.StabilizationMetadata.CPUInTargetRange {
-			slog.Warn("STABILIZATION INCONSISTENCY",
-				"phase", phaseMetadata.CurrentPhase,
-				"cpu_in_target_range", phaseMetadata.StabilizationMetadata.CPUInTargetRange,
-				"system_stable", systemState.IsStable)
-		}
-	}
-}
-
-// handleWorkloadAdjustment processes workload adjustment requests
-func (br *BenchmarkRunner) handleWorkloadAdjustment(adjustment metrics.WorkloadAdjustment) {
-	br.workloadController.HandleAdjustment(adjustment)
 }
 
 // Close closes all resources

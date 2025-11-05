@@ -27,15 +27,11 @@ type DatabaseConfig struct {
 type WorkloadConfig struct {
 	BenchmarkMode      string         `yaml:"benchmark_mode"` // "text_search" or "field_query"
 	ReadWriteRatio     ReadWriteRatio `yaml:"read_write_ratio"`
-	Duration           time.Duration  `yaml:"duration"`
-	TargetQPS          int            `yaml:"target_qps"`
+	WarmupOperations   int64          `yaml:"warmup_operations"`   // Number of operations for warmup phase
+	TargetOperations   int64          `yaml:"target_operations"`   // Total operations to execute
 	WorkerCount        int            `yaml:"worker_count"`
 	DatasetSize        int            `yaml:"dataset_size"`
-	SaturationTarget   float64        `yaml:"saturation_target"` // CPU %
-	WarmupDuration     time.Duration  `yaml:"warmup_duration"`
-	StabilityWindow    time.Duration  `yaml:"stability_window"`
-	AdjustmentCooldown time.Duration  `yaml:"adjustment_cooldown"` // Time to wait between adjustments
-	QueryResultLimit   int            `yaml:"query_result_limit"`  // Limit on text search results
+	QueryResultLimit   int            `yaml:"query_result_limit"` // Limit on text search results
 }
 
 // ReadWriteRatio defines the ratio of read vs write operations

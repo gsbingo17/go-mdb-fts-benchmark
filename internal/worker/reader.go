@@ -3,9 +3,8 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/time/rate"
 
 	"mongodb-benchmarking-tool/internal/database"
 	"mongodb-benchmarking-tool/internal/generator"
@@ -18,7 +17,7 @@ type ReadWorker struct {
 	database      database.Database
 	workloadGen   *generator.WorkloadGenerator
 	metrics       *metrics.MetricsCollector
-	rateLimiter   *rate.Limiter
+	pool          *WorkerPool // Reference to pool for operation tracking
 	operationLog  []OperationLog
 	queryLimit    int
 	benchmarkMode string // "text_search" or "field_query"
@@ -41,7 +40,7 @@ func NewReadWorker(
 	db database.Database,
 	workloadGen *generator.WorkloadGenerator,
 	metricsCollector *metrics.MetricsCollector,
-	rateLimiter *rate.Limiter,
+	pool *WorkerPool,
 	queryLimit int,
 	benchmarkMode string,
 ) *ReadWorker {
@@ -50,7 +49,7 @@ func NewReadWorker(
 		database:      db,
 		workloadGen:   workloadGen,
 		metrics:       metricsCollector,
-		rateLimiter:   rateLimiter,
+		pool:          pool,
 		operationLog:  make([]OperationLog, 0, 1000),
 		queryLimit:    queryLimit,
 		benchmarkMode: benchmarkMode,
@@ -67,13 +66,13 @@ func (rw *ReadWorker) Start(ctx context.Context) {
 			slog.Info("Read worker stopping", "worker_id", rw.id)
 			return
 		default:
-			// Wait for rate limiter
-			if err := rw.rateLimiter.Wait(ctx); err != nil {
-				slog.Debug("Rate limiter wait interrupted", "worker_id", rw.id, "error", err)
+			// Check if we've reached the target operation count
+			if atomic.LoadInt64(&rw.pool.completedReadOps) >= atomic.LoadInt64(&rw.pool.targetReadOps) {
+				slog.Debug("Read target reached, worker stopping", "worker_id", rw.id)
 				return
 			}
 
-			// Execute operation based on benchmark mode
+			// Execute operation based on benchmark mode (no rate limiting - run at max speed)
 			var err error
 			switch rw.benchmarkMode {
 			case "text_search":
@@ -87,6 +86,9 @@ func (rw *ReadWorker) Start(ctx context.Context) {
 			if err != nil {
 				slog.Debug("Operation failed", "worker_id", rw.id, "mode", rw.benchmarkMode, "error", err)
 			}
+
+			// Increment completed operations counter
+			atomic.AddInt64(&rw.pool.completedReadOps, 1)
 		}
 	}
 }

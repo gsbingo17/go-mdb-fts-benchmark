@@ -64,26 +64,16 @@ func applyDefaults(config *Config) error {
 		config.Workload.ReadWriteRatio.ReadPercent = 80
 		config.Workload.ReadWriteRatio.WritePercent = 20
 	}
-	if config.Workload.Duration == 0 {
-		config.Workload.Duration = 30 * time.Minute
-	}
-	if config.Workload.TargetQPS == 0 {
-		config.Workload.TargetQPS = 100
+	if config.Workload.TargetOperations == 0 {
+		config.Workload.TargetOperations = 1000000 // 1M operations default
 	}
 	if config.Workload.WorkerCount == 0 {
-		config.Workload.WorkerCount = 10
+		config.Workload.WorkerCount = 50
 	}
 	if config.Workload.DatasetSize == 0 {
-		config.Workload.DatasetSize = 100000
+		config.Workload.DatasetSize = 1000000 // 1M documents default
 	}
-	if config.Workload.SaturationTarget == 0 {
-		config.Workload.SaturationTarget = 80.0 // 80% CPU
-	}
-	// REMOVED: Warmup duration default override to respect explicit "0m" settings
-	// Users can explicitly set warmup_duration: "0m" to skip warmup phase
-	if config.Workload.StabilityWindow == 0 {
-		config.Workload.StabilityWindow = 30 * time.Minute
-	}
+	// WarmupOperations defaults to 0 (no warmup) unless explicitly set
 
 	// Metrics defaults
 	if config.Metrics.CollectionInterval == 0 {
@@ -133,17 +123,17 @@ func validate(config *Config) error {
 	if config.Workload.ReadWriteRatio.ReadPercent < 0 || config.Workload.ReadWriteRatio.WritePercent < 0 {
 		return fmt.Errorf("read_percent and write_percent must be non-negative")
 	}
-	if config.Workload.TargetQPS <= 0 {
-		return fmt.Errorf("target_qps must be positive")
+	if config.Workload.TargetOperations <= 0 {
+		return fmt.Errorf("target_operations must be positive")
+	}
+	if config.Workload.WarmupOperations < 0 {
+		return fmt.Errorf("warmup_operations must be non-negative")
 	}
 	if config.Workload.WorkerCount <= 0 {
 		return fmt.Errorf("worker_count must be positive")
 	}
 	if config.Workload.DatasetSize <= 0 {
 		return fmt.Errorf("dataset_size must be positive")
-	}
-	if config.Workload.SaturationTarget <= 0 || config.Workload.SaturationTarget > 100 {
-		return fmt.Errorf("saturation_target must be between 0 and 100")
 	}
 
 	// Metrics validation

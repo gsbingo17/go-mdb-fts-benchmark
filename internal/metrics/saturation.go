@@ -54,16 +54,16 @@ func NewSaturationController(
 	cfg config.WorkloadConfig,
 	adjustmentCallback func(WorkloadAdjustment),
 ) *SaturationController {
-	// Default adjustment cooldown if not specified
-	cooldown := cfg.AdjustmentCooldown
-	if cooldown == 0 {
-		cooldown = 3 * time.Minute // Default 3 minutes
-	}
+	// Default values for saturation control (not used in operation-count mode)
+	// These are here for backward compatibility with time-based configs
+	cooldown := 3 * time.Minute
+	targetCPU := 80.0
+	stabilityWindow := 5 * time.Minute
 
 	return &SaturationController{
 		monitor:            monitor,
-		targetCPU:          cfg.SaturationTarget,
-		stabilityWindow:    cfg.StabilityWindow,
+		targetCPU:          targetCPU,
+		stabilityWindow:    stabilityWindow,
 		adjustmentCooldown: cooldown,
 		adjustmentStep:     5.0, // 5% adjustment steps
 		cpuHistory:         make([]CPUReading, 0, 100),

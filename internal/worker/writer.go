@@ -3,9 +3,8 @@ package worker
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
-
-	"golang.org/x/time/rate"
 
 	"mongodb-benchmarking-tool/internal/database"
 	"mongodb-benchmarking-tool/internal/generator"
@@ -18,7 +17,7 @@ type WriteWorker struct {
 	database      database.Database
 	dataGenerator *generator.DataGenerator
 	metrics       *metrics.MetricsCollector
-	rateLimiter   *rate.Limiter
+	pool          *WorkerPool // Reference to pool for operation tracking
 	operationLog  []OperationLog
 }
 
@@ -28,14 +27,14 @@ func NewWriteWorker(
 	db database.Database,
 	dataGen *generator.DataGenerator,
 	metricsCollector *metrics.MetricsCollector,
-	rateLimiter *rate.Limiter,
+	pool *WorkerPool,
 ) *WriteWorker {
 	return &WriteWorker{
 		id:            id,
 		database:      db,
 		dataGenerator: dataGen,
 		metrics:       metricsCollector,
-		rateLimiter:   rateLimiter,
+		pool:          pool,
 		operationLog:  make([]OperationLog, 0, 1000),
 	}
 }
@@ -50,16 +49,19 @@ func (ww *WriteWorker) Start(ctx context.Context) {
 			slog.Info("Write worker stopping", "worker_id", ww.id)
 			return
 		default:
-			// Wait for rate limiter
-			if err := ww.rateLimiter.Wait(ctx); err != nil {
-				slog.Debug("Rate limiter wait interrupted", "worker_id", ww.id, "error", err)
+			// Check if we've reached the target operation count
+			if atomic.LoadInt64(&ww.pool.completedWriteOps) >= atomic.LoadInt64(&ww.pool.targetWriteOps) {
+				slog.Debug("Write target reached, worker stopping", "worker_id", ww.id)
 				return
 			}
 
-			// Execute document insertion
+			// Execute document insertion (no rate limiting - run at max speed)
 			if err := ww.insertDocument(ctx); err != nil {
 				slog.Debug("Document insertion failed", "worker_id", ww.id, "error", err)
 			}
+
+			// Increment completed operations counter
+			atomic.AddInt64(&ww.pool.completedWriteOps, 1)
 		}
 	}
 }
