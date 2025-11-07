@@ -195,7 +195,7 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 // seedData generates and inserts test data
 func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 	dataGen := generator.NewDataGenerator(time.Now().UnixNano())
-	batchSize := 1000
+	batchSize := 128 // Reduced from 1000 for Firestore compatibility
 
 	for i := 0; i < count; i += batchSize {
 		remaining := count - i
