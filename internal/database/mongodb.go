@@ -43,9 +43,9 @@ func (m *MongoDBClient) Connect(ctx context.Context) error {
 		SetConnectTimeout(time.Duration(m.config.ConnectTimeoutMs) * time.Millisecond).
 		SetTimeout(time.Duration(m.config.SocketTimeoutMs) * time.Millisecond). // Socket timeout in v2
 		SetServerSelectionTimeout(60 * time.Second).                            // Increase server selection timeout
-		SetHeartbeatInterval(30 * time.Second).                                 // Increase heartbeat interval
-		SetRetryWrites(true).                                                   // Enable retryable writes
-		SetRetryReads(true)                                                     // Enable retryable reads
+		SetHeartbeatInterval(30 * time.Second)                                // Increase heartbeat interval
+		// SetRetryWrites(true).                                                   // Enable retryable writes
+		// SetRetryReads(true)                                                     // Enable retryable reads
 
 	fmt.Printf("INFO: Connecting to MongoDB Atlas...\n")
 	// Connect to MongoDB
