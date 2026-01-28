@@ -43,6 +43,35 @@ func (dg *DataGenerator) GenerateDocument() database.Document {
 	}
 }
 
+// GenerateTokenDocument creates a token-based document for cost modeling
+func (dg *DataGenerator) GenerateTokenDocument(textShards, samplers, threadID int) database.Document {
+	// Generate deterministic ID
+	idBytes := NextPreloadIdBytes(dg.rng, KeySize, samplers, threadID)
+	id := PreloadIdBytesToId(idBytes)
+
+	doc := database.Document{
+		ID:        id,
+		CreatedAt: time.Now(),
+	}
+
+	// Generate token-based fields
+	for i := 0; i < textShards && i < len(DatabaseSearchFields); i++ {
+		fieldName := DatabaseSearchFields[i]
+		fieldValue := MakeTextSearchFieldValue(idBytes, id, fieldName)
+
+		switch i {
+		case 0:
+			doc.Text1 = fieldValue
+		case 1:
+			doc.Text2 = fieldValue
+		case 2:
+			doc.Text3 = fieldValue
+		}
+	}
+
+	return doc
+}
+
 // GenerateDocuments creates multiple documents in batch
 func (dg *DataGenerator) GenerateDocuments(count int) []database.Document {
 	documents := make([]database.Document, count)

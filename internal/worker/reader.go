@@ -21,6 +21,10 @@ type ReadWorker struct {
 	rateLimiter  *rate.Limiter
 	operationLog []OperationLog
 	queryLimit   int
+
+	// Cost model mode configuration
+	isCostModelMode bool
+	queryRequest    generator.QueryRequest // Single request object with all query generation parameters
 }
 
 // OperationLog tracks individual operations for analysis
@@ -44,14 +48,21 @@ func NewReadWorker(
 	queryLimit int,
 ) *ReadWorker {
 	return &ReadWorker{
-		id:           id,
-		database:     db,
-		workloadGen:  workloadGen,
-		metrics:      metricsCollector,
-		rateLimiter:  rateLimiter,
-		operationLog: make([]OperationLog, 0, 1000),
-		queryLimit:   queryLimit,
+		id:              id,
+		database:        db,
+		workloadGen:     workloadGen,
+		metrics:         metricsCollector,
+		rateLimiter:     rateLimiter,
+		operationLog:    make([]OperationLog, 0, 1000),
+		queryLimit:      queryLimit,
+		isCostModelMode: false,
 	}
+}
+
+// SetCostModelMode configures the worker for cost_model mode with QueryRequest
+func (rw *ReadWorker) SetCostModelMode(enabled bool, queryRequest generator.QueryRequest) {
+	rw.isCostModelMode = enabled
+	rw.queryRequest = queryRequest
 }
 
 // Start begins the read worker operations
@@ -82,11 +93,34 @@ func (rw *ReadWorker) Start(ctx context.Context) {
 func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 	startTime := time.Now()
 
-	// Generate search query
-	query := rw.workloadGen.GenerateSearchQuery()
+	// Generate search query based on mode
+	var query string
+	var resultCount int
+	var err error
+	var collectionName string
+	var textShard int
+	var limit int
 
-	// Execute the search with limit
-	resultCount, err := rw.database.ExecuteTextSearch(ctx, query, rw.queryLimit)
+	if rw.isCostModelMode {
+		// Use QueryRequest/QueryResult pattern for clean multi-dimensional query generation
+		queryResult := rw.workloadGen.GenerateTokenQueryRequest(rw.queryRequest)
+
+		// Execute with the generated query, collection, and limit from QueryResult
+		resultCount, err = rw.database.ExecuteTextSearchInCollection(
+			ctx,
+			queryResult.CollectionName,
+			queryResult.Query,
+			queryResult.Limit,
+		)
+		query = queryResult.Query
+		collectionName = queryResult.CollectionName
+		textShard = queryResult.SelectedTextShard
+		limit = queryResult.Limit
+	} else {
+		query = rw.workloadGen.GenerateSearchQuery()
+		resultCount, err = rw.database.ExecuteTextSearch(ctx, query, rw.queryLimit)
+		limit = rw.queryLimit
+	}
 
 	latency := time.Since(startTime)
 	success := err == nil
@@ -114,25 +148,57 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 
 	// Log zero result queries to monitor search effectiveness
 	if resultCount == 0 {
-		slog.Debug("Zero results query",
-			"worker_id", rw.id,
-			"query", query,
-			"latency_ms", latency.Milliseconds())
+		if rw.isCostModelMode {
+			slog.Debug("Zero results query",
+				"worker_id", rw.id,
+				"collection", collectionName,
+				"text_shard", textShard,
+				"limit", limit,
+				"query", query,
+				"latency_us", latency.Microseconds())
+		} else {
+			slog.Debug("Zero results query",
+				"worker_id", rw.id,
+				"query", query,
+				"latency_us", latency.Microseconds())
+		}
 	} else {
-		slog.Debug("Successful search",
-			"worker_id", rw.id,
-			"query", query,
-			"result_count", resultCount,
-			"latency_ms", latency.Milliseconds())
+		if rw.isCostModelMode {
+			slog.Debug("Successful search",
+				"worker_id", rw.id,
+				"collection", collectionName,
+				"text_shard", textShard,
+				"limit", limit,
+				"query", query,
+				"result_count", resultCount,
+				"latency_us", latency.Microseconds())
+		} else {
+			slog.Debug("Successful search",
+				"worker_id", rw.id,
+				"query", query,
+				"result_count", resultCount,
+				"latency_us", latency.Microseconds())
+		}
 	}
 
 	// Log slow queries
 	if latency > 1000*time.Millisecond {
-		slog.Warn("Slow query detected",
-			"worker_id", rw.id,
-			"query", query,
-			"latency_ms", latency.Milliseconds(),
-			"result_count", resultCount)
+		if rw.isCostModelMode {
+			slog.Warn("Slow query detected",
+				"worker_id", rw.id,
+				"collection", collectionName,
+				"text_shard", textShard,
+				"limit", limit,
+				"query", query,
+				"latency_us", latency.Microseconds(),
+				"result_count", resultCount)
+		} else {
+			slog.Warn("Slow query detected",
+				"worker_id", rw.id,
+				"query", query,
+				"latency_us", latency.Microseconds(),
+				"result_count", resultCount)
+		}
 	}
 
 	return err

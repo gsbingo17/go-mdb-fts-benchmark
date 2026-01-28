@@ -29,6 +29,26 @@ type BenchmarkRunner struct {
 	measurementActive    bool
 }
 
+// getCollectionNameForShard returns the collection name for a specific shard number
+func (br *BenchmarkRunner) getCollectionNameForShard(shard int) string {
+	baseCollection := br.config.Database.Collection
+	return fmt.Sprintf("%s%d", baseCollection, shard)
+}
+
+// getAllShardCollections returns all shard collection names based on textShards configuration
+func (br *BenchmarkRunner) getAllShardCollections() []string {
+	if br.config.Workload.Mode != "cost_model" {
+		return []string{br.config.Database.Collection}
+	}
+
+	// TextShards is now an array - create collections for each shard value
+	collections := make([]string, len(br.config.Workload.TextShards))
+	for i, shardNum := range br.config.Workload.TextShards {
+		collections[i] = br.getCollectionNameForShard(shardNum)
+	}
+	return collections
+}
+
 // NewBenchmarkRunner creates a new benchmark runner
 func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 	// Create database client
@@ -171,40 +191,30 @@ func (br *BenchmarkRunner) connectDatabase(ctx context.Context) error {
 	return nil
 }
 
-// setupData prepares the database with test data and indexes
-func (br *BenchmarkRunner) setupData(ctx context.Context) error {
-	slog.Info("Setting up database schema and data")
-
-	// Create text indexes
-	if err := br.database.CreateTextIndex(ctx); err != nil {
-		return fmt.Errorf("failed to create text index: %w", err)
-	}
-
-	// Check if we need to seed data
-	count, err := br.database.CountDocuments(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to count documents: %w", err)
-	}
-
-	requiredDocuments := int64(br.config.Workload.DatasetSize)
-	if count < requiredDocuments {
-		slog.Info("Seeding database with test data",
-			"existing", count,
-			"required", requiredDocuments)
-
-		if err := br.seedData(ctx, int(requiredDocuments-count)); err != nil {
-			return fmt.Errorf("data seeding failed: %w", err)
-		}
-	}
-
-	slog.Info("Database setup completed", "document_count", requiredDocuments)
-	return nil
-}
-
 // seedData generates and inserts test data
 func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 	dataGen := generator.NewDataGenerator(time.Now().UnixNano())
 	batchSize := 1000
+
+	// Check if we're in cost_model mode
+	isCostModelMode := br.config.Workload.Mode == "cost_model"
+
+	// Get max textShard value for data generation
+	maxTextShard := 0
+	if isCostModelMode && len(br.config.Workload.TextShards) > 0 {
+		for _, shard := range br.config.Workload.TextShards {
+			if shard > maxTextShard {
+				maxTextShard = shard
+			}
+		}
+		slog.Info("Using token-based document generation with multi-collection distribution (cost_model mode)",
+			"text_shards", br.config.Workload.TextShards,
+			"max_text_shard", maxTextShard,
+			"worker_count", br.config.Workload.WorkerCount,
+			"collections", br.getAllShardCollections())
+	} else {
+		slog.Info("Using standard document generation (benchmark mode)")
+	}
 
 	for i := 0; i < count; i += batchSize {
 		remaining := count - i
@@ -212,17 +222,129 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 			remaining = batchSize
 		}
 
-		docs := dataGen.GenerateDocuments(remaining)
-		if err := br.database.InsertDocuments(ctx, docs); err != nil {
-			return fmt.Errorf("batch insert failed: %w", err)
+		if isCostModelMode {
+			// Generate and distribute token-based documents across shard collections
+			// Distribute documents evenly across shards using the array values
+			docsPerShard := make(map[int][]database.Document)
+
+			for j := 0; j < remaining; j++ {
+				threadID := (i + j) % br.config.Workload.WorkerCount
+				doc := dataGen.GenerateTokenDocument(
+					maxTextShard,
+					br.config.Workload.WorkerCount,
+					threadID,
+				)
+
+				// Distribute documents round-robin across the textShards array values
+				shardIndex := (i + j) % len(br.config.Workload.TextShards)
+				shard := br.config.Workload.TextShards[shardIndex]
+				docsPerShard[shard] = append(docsPerShard[shard], doc)
+			}
+
+			// Insert documents into their respective shard collections
+			for shard, docs := range docsPerShard {
+				if len(docs) > 0 {
+					collectionName := br.getCollectionNameForShard(shard)
+					if err := br.database.InsertDocumentsInCollection(ctx, collectionName, docs); err != nil {
+						return fmt.Errorf("batch insert failed for collection %s: %w", collectionName, err)
+					}
+				}
+			}
+		} else {
+			// Generate standard documents for benchmarking
+			docs := dataGen.GenerateDocuments(remaining)
+			if err := br.database.InsertDocuments(ctx, docs); err != nil {
+				return fmt.Errorf("batch insert failed: %w", err)
+			}
 		}
 
 		if i%10000 == 0 {
-			slog.Info("Data seeding progress", "inserted", i, "total", count)
+			slog.Info("Data seeding progress", "inserted", i, "total", count, "mode", br.config.Workload.Mode)
 		}
 	}
 
 	return nil
+}
+
+// setupData prepares the database with test data and indexes
+func (br *BenchmarkRunner) setupData(ctx context.Context) error {
+	slog.Info("Setting up database schema and data", "mode", br.config.Workload.Mode)
+
+	// Create text indexes based on mode
+	if err := br.createTextIndexForMode(ctx); err != nil {
+		return fmt.Errorf("failed to create text index: %w", err)
+	}
+
+	// Check if we need to seed data
+	var count int64
+	var err error
+
+	if br.config.Workload.Mode == "cost_model" {
+		// Count documents across all shard collections
+		collections := br.getAllShardCollections()
+		for _, collectionName := range collections {
+			collCount, err := br.database.CountDocumentsInCollection(ctx, collectionName)
+			if err != nil {
+				return fmt.Errorf("failed to count documents in collection %s: %w", collectionName, err)
+			}
+			count += collCount
+		}
+		slog.Info("Counted existing documents across all shard collections",
+			"total_count", count,
+			"collections", collections)
+	} else {
+		count, err = br.database.CountDocuments(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to count documents: %w", err)
+		}
+	}
+
+	requiredDocuments := int64(br.config.Workload.DatasetSize)
+	if count < requiredDocuments {
+		slog.Info("Seeding database with test data",
+			"existing", count,
+			"required", requiredDocuments,
+			"mode", br.config.Workload.Mode)
+
+		if err := br.seedData(ctx, int(requiredDocuments-count)); err != nil {
+			return fmt.Errorf("data seeding failed: %w", err)
+		}
+	}
+
+	slog.Info("Database setup completed", "document_count", requiredDocuments, "mode", br.config.Workload.Mode)
+	return nil
+}
+
+// createTextIndexForMode creates the appropriate text index based on the workload mode
+func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
+	isCostModelMode := br.config.Workload.Mode == "cost_model"
+
+	if isCostModelMode {
+		slog.Info("Creating token-based text indexes for multi-collection setup",
+			"text_shards", br.config.Workload.TextShards,
+			"base_collection", br.config.Database.Collection)
+
+		// Get all shard collection names
+		collections := br.getAllShardCollections()
+
+		// Create progressive indexes for each shard collection based on the TextShards array values
+		for i, collectionName := range collections {
+			shardNumber := br.config.Workload.TextShards[i] // Use the actual shard number from array
+			slog.Info("Creating progressive text index for collection",
+				"collection", collectionName,
+				"shard", shardNumber,
+				"fields", getIndexFieldsDescription(shardNumber))
+			if err := br.database.CreateTextIndexForCollection(ctx, collectionName, shardNumber); err != nil {
+				return fmt.Errorf("failed to create index for collection %s: %w", collectionName, err)
+			}
+		}
+
+		slog.Info("Successfully created text indexes for all shard collections", "count", len(collections))
+		return nil
+	} else {
+		slog.Info("Creating standard text index (title, content, search_terms)")
+		return br.database.CreateTextIndex(ctx)
+	}
 }
 
 // warmupPhase runs a brief warmup to stabilize the system
@@ -739,4 +861,18 @@ func (br *BenchmarkRunner) Close() error {
 	}
 
 	return nil
+}
+
+// getIndexFieldsDescription returns a human-readable description of indexed fields for a given shard
+func getIndexFieldsDescription(shardNumber int) string {
+	switch shardNumber {
+	case 1:
+		return "text1"
+	case 2:
+		return "text1, text2"
+	case 3:
+		return "text1, text2, text3"
+	default:
+		return "text1, text2, text3 (all fields)"
+	}
 }

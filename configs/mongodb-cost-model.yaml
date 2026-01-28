@@ -1,0 +1,103 @@
+# MongoDB Atlas Configuration for Cost Model Mode (Token-Based FTS Benchmark)
+database:
+  type: "mongodb"
+  uri: "mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000"
+  database: "cost"
+  collection: "DatabaseSearchWords"  # Base collection name - system appends shard numbers (1, 2, 3)
+  max_pool_size: 100
+  min_pool_size: 5
+  max_conn_idle_time: 60
+  connect_timeout_ms: 30000
+  socket_timeout_ms: 120000
+
+workload:
+  # MODE: "cost_model" enables token-based FTS benchmarking
+  mode: "cost_model"
+  
+  # Standard workload settings
+  read_write_ratio:
+    read_percent: 100  # Pure read test for FTS queries
+    write_percent: 0
+  duration: "20m"
+  target_qps: 200
+  worker_count: 7
+  dataset_size: 1000
+  saturation_target: 90.0
+  warmup_duration: "1m"
+  stability_window: "5m"
+  adjustment_cooldown: "3m"
+  # query_result_limit: 50
+  
+  # Token-based FTS configuration
+  # text_shards: 3  # Use 3 text fields (text1, text2, text3)
+  text_shards: [1, 2, 3]                    # Test all 3 progressive indexes
+  query_result_limits: [10, 50, 100]        # Test 3 different result sizes
+  use_random_queries: false
+  random_test_runs: 70
+  random_query_seed: "quossa"               # Fixed seed for reproducible random query generation
+  
+  # Query shapes to test (format: positive_terms:negative_terms:positive_phrases:negative_phrases:phrase_length)
+  # Each shape tests a different query pattern
+  query_parameters:
+    # Simple queries - single positive term
+    - positive_terms: 1
+      negative_terms: 0
+      positive_phrases: 0
+      negative_phrases: 0
+      phrase_length: 20
+    
+    # Exclusion queries - single negative term
+    - positive_terms: 0
+      negative_terms: 1
+      positive_phrases: 0
+      negative_phrases: 0
+      phrase_length: 20
+    
+    # Phrase queries - single phrase of 20 tokens
+    - positive_terms: 0
+      negative_terms: 0
+      positive_phrases: 1
+      negative_phrases: 0
+      phrase_length: 20
+    
+    # Negative phrase queries
+    - positive_terms: 0
+      negative_terms: 0
+      positive_phrases: 0
+      negative_phrases: 1
+      phrase_length: 20
+    
+    # Complex mixed query
+    - positive_terms: 2
+      negative_terms: 1
+      positive_phrases: 1
+      negative_phrases: 0
+      phrase_length: 5
+  
+  # Maximum parameters for random query generation (when use_random_queries: true)
+  random_query_max_parameters:
+    positive_terms: 50
+    negative_terms: 50
+    positive_phrases: 20
+    negative_phrases: 20
+    phrase_length: 20
+
+metrics:
+  collection_interval: "10s"
+  export_interval: "60s"
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 8080
+
+cost:
+  provider: "atlas"
+  currency_code: "USD"
+  calculation_mode: "estimate"
+  atlas:
+    public_key: "YOUR_ATLAS_PUBLIC_KEY"
+    private_key: "YOUR_ATLAS_PRIVATE_KEY"
+    group_id: "YOUR_PROJECT_ID"
+    cluster_name: "YOUR_CLUSTER_NAME"
+    hourly_cost: 0.10  # Adjust based on cluster tier (M30 example)
+    storage_cost_per_gb: 0

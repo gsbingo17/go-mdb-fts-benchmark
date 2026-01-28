@@ -2,10 +2,31 @@ package generator
 
 import (
 	"fmt"
+	"math"
 	"math/rand"
+	"mongodb-benchmarking-tool/internal/config"
 	"strings"
 	"time"
 )
+
+// QueryRequest encapsulates all parameters needed for query generation
+type QueryRequest struct {
+	BaseCollectionName string
+	TextShards         []int                    // Array of shard values to randomly select from
+	QueryParams        []config.QueryParameters // Multiple query shapes to randomly select from
+	Limits             []int                    // Array of limit values to randomly select from
+	UseRandomQueries   bool
+	RandomMaxParams    config.QueryParameters
+}
+
+// QueryResult contains the generated query and all execution parameters
+type QueryResult struct {
+	Query             string
+	CollectionName    string
+	Limit             int
+	SelectedTextShard int
+	SelectedParams    config.QueryParameters
+}
 
 // WorkloadGenerator generates search queries and workload patterns
 type WorkloadGenerator struct {
@@ -242,4 +263,110 @@ func (wg *WorkloadGenerator) selectOperationType() string {
 		return "read"
 	}
 	return "write"
+}
+
+// GenerateTokenQuery creates a token-based text search query for cost modeling
+func (wg *WorkloadGenerator) GenerateTokenQuery(textShards int, params config.QueryParameters) string {
+	return MakeDatabaseRawTextSearchQuery(
+		wg.rng,
+		textShards,
+		params.PositiveTerms,
+		params.NegativeTerms,
+		params.PositivePhrases,
+		params.NegativePhrases,
+		params.PhraseLength,
+	)
+}
+
+// GenerateTokenQueryRequest generates a complete query with randomly selected parameters
+// from the provided pre-generated arrays, enabling comprehensive multi-dimensional testing.
+// Query shapes are always pre-generated at startup for reproducibility (matching Java reference).
+func (wg *WorkloadGenerator) GenerateTokenQueryRequest(req QueryRequest) QueryResult {
+	// Step 1: Randomly select textShards from array
+	textShard := req.TextShards[wg.rng.Intn(len(req.TextShards))]
+
+	// Step 2: Randomly select query parameters from pre-generated shapes
+	params := req.QueryParams[wg.rng.Intn(len(req.QueryParams))]
+
+	// Step 3: Randomly select limit from array
+	limit := req.Limits[wg.rng.Intn(len(req.Limits))]
+
+	// Step 4: Generate query string
+	query := wg.GenerateTokenQuery(textShard, params)
+
+	// Step 5: Determine collection name
+	collectionName := fmt.Sprintf("%s%d", req.BaseCollectionName, textShard)
+
+	return QueryResult{
+		Query:             query,
+		CollectionName:    collectionName,
+		Limit:             limit,
+		SelectedTextShard: textShard,
+		SelectedParams:    params,
+	}
+}
+
+// SkewLow returns a random integer in [0, max], skewed toward lower values using a power law.
+// This mimics the Java implementation's skew distribution for realistic query generation.
+func SkewLow(rng *rand.Rand, max int, power float64) int {
+	if max <= 0 {
+		return 0
+	}
+	skewed := math.Pow(rng.Float64(), power)
+	return int(skewed * float64(max+1))
+}
+
+// MakeRandomQueryParameters generates random query parameters with a skewed distribution.
+// This creates realistic query patterns similar to the Java reference implementation.
+func (wg *WorkloadGenerator) MakeRandomQueryParameters(maxParams config.QueryParameters) config.QueryParameters {
+	// Skews for each parameter type (from Java reference)
+	skews := []float64{3.0, 3.0, 2.2, 2.2, 2.2}
+
+	var qp config.QueryParameters
+	// Keep generating until we get at least one term/phrase
+	for {
+		qp.PositiveTerms = SkewLow(wg.rng, maxParams.PositiveTerms, skews[0])
+		qp.NegativeTerms = SkewLow(wg.rng, maxParams.NegativeTerms, skews[1])
+		qp.PositivePhrases = SkewLow(wg.rng, maxParams.PositivePhrases, skews[2])
+		qp.NegativePhrases = SkewLow(wg.rng, maxParams.NegativePhrases, skews[3])
+		// Phrase length should be at least 1
+		qp.PhraseLength = 1 + SkewLow(wg.rng, maxParams.PhraseLength-1, skews[4])
+
+		// Ensure at least one term/phrase is present
+		if qp.PositiveTerms+qp.NegativeTerms+qp.PositivePhrases+qp.NegativePhrases > 0 {
+			break
+		}
+	}
+	return qp
+}
+
+// GenerateQueryShapes pre-generates query shapes for reproducible benchmarking.
+// This matches the reference Java implementation's approach of generating shapes once at startup.
+func GenerateQueryShapes(seed string, count int, maxParams config.QueryParameters) []config.QueryParameters {
+	rng := MakeRandom(seed)
+	shapes := make([]config.QueryParameters, count)
+
+	// Skews for each parameter type (from Java reference)
+	skews := []float64{3.0, 3.0, 2.2, 2.2, 2.2}
+
+	for i := 0; i < count; i++ {
+		var qp config.QueryParameters
+		// Keep generating until we get at least one term/phrase
+		for {
+			qp.PositiveTerms = SkewLow(rng, maxParams.PositiveTerms, skews[0])
+			qp.NegativeTerms = SkewLow(rng, maxParams.NegativeTerms, skews[1])
+			qp.PositivePhrases = SkewLow(rng, maxParams.PositivePhrases, skews[2])
+			qp.NegativePhrases = SkewLow(rng, maxParams.NegativePhrases, skews[3])
+			// Phrase length should be at least 1
+			qp.PhraseLength = 1 + SkewLow(rng, maxParams.PhraseLength-1, skews[4])
+
+			// Ensure at least one term/phrase is present
+			if qp.PositiveTerms+qp.NegativeTerms+qp.PositivePhrases+qp.NegativePhrases > 0 {
+				break
+			}
+		}
+		shapes[i] = qp
+	}
+
+	return shapes
 }

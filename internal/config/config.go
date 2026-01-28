@@ -153,6 +153,32 @@ func validate(config *Config) error {
 		return fmt.Errorf("metrics.export_format must be one of: json, csv, prometheus")
 	}
 
+	// Cost model mode specific validation
+	if config.Workload.Mode == "cost_model" {
+		if len(config.Workload.TextShards) == 0 {
+			return fmt.Errorf("workload.text_shards array cannot be empty in cost_model mode")
+		}
+		if len(config.Workload.QueryResultLimits) == 0 {
+			return fmt.Errorf("workload.query_result_limits array cannot be empty in cost_model mode")
+		}
+		// Validate textShards values are positive
+		for i, shard := range config.Workload.TextShards {
+			if shard <= 0 {
+				return fmt.Errorf("workload.text_shards[%d] must be positive, got %d", i, shard)
+			}
+		}
+		// Validate queryResultLimits values are positive
+		for i, limit := range config.Workload.QueryResultLimits {
+			if limit <= 0 {
+				return fmt.Errorf("workload.query_result_limits[%d] must be positive, got %d", i, limit)
+			}
+		}
+		// Validate query parameters exist
+		if len(config.Workload.QueryParameters) == 0 && !config.Workload.UseRandomQueries {
+			return fmt.Errorf("workload.query_parameters array cannot be empty when use_random_queries is false in cost_model mode")
+		}
+	}
+
 	// Cost validation
 	if config.Cost.Provider == "" {
 		return fmt.Errorf("cost.provider is required")

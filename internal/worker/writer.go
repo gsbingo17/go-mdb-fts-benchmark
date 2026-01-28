@@ -20,6 +20,11 @@ type WriteWorker struct {
 	metrics       *metrics.MetricsCollector
 	rateLimiter   *rate.Limiter
 	operationLog  []OperationLog
+
+	// Cost model mode configuration
+	isCostModelMode bool
+	textShards      int
+	workerCount     int
 }
 
 // NewWriteWorker creates a new write worker
@@ -31,13 +36,23 @@ func NewWriteWorker(
 	rateLimiter *rate.Limiter,
 ) *WriteWorker {
 	return &WriteWorker{
-		id:            id,
-		database:      db,
-		dataGenerator: dataGen,
-		metrics:       metricsCollector,
-		rateLimiter:   rateLimiter,
-		operationLog:  make([]OperationLog, 0, 1000),
+		id:              id,
+		database:        db,
+		dataGenerator:   dataGen,
+		metrics:         metricsCollector,
+		rateLimiter:     rateLimiter,
+		operationLog:    make([]OperationLog, 0, 1000),
+		isCostModelMode: false,
+		textShards:      0,
+		workerCount:     0,
 	}
+}
+
+// SetCostModelMode configures the worker for cost_model mode
+func (ww *WriteWorker) SetCostModelMode(enabled bool, textShards int, workerCount int) {
+	ww.isCostModelMode = enabled
+	ww.textShards = textShards
+	ww.workerCount = workerCount
 }
 
 // Start begins the write worker operations
@@ -68,8 +83,13 @@ func (ww *WriteWorker) Start(ctx context.Context) {
 func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 	startTime := time.Now()
 
-	// Generate document
-	doc := ww.dataGenerator.GenerateDocument()
+	// Generate document based on mode
+	var doc database.Document
+	if ww.isCostModelMode {
+		doc = ww.dataGenerator.GenerateTokenDocument(ww.textShards, ww.workerCount, ww.id)
+	} else {
+		doc = ww.dataGenerator.GenerateDocument()
+	}
 
 	// Insert the document
 	err := ww.database.InsertDocument(ctx, doc)
@@ -98,10 +118,18 @@ func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 
 	// Log slow operations
 	if latency > 500*time.Millisecond {
+		titleField := doc.Title
+		if ww.isCostModelMode {
+			// In cost_model mode, use text1 field for logging
+			titleField = doc.Text1
+		}
+		if len(titleField) > 50 {
+			titleField = titleField[:50]
+		}
 		slog.Warn("Slow write operation detected",
 			"worker_id", ww.id,
 			"latency_ms", latency.Milliseconds(),
-			"document_title", doc.Title[:min(50, len(doc.Title))])
+			"document_preview", titleField)
 	}
 
 	return err

@@ -35,6 +35,25 @@ type WorkloadConfig struct {
 	StabilityWindow    time.Duration  `yaml:"stability_window"`
 	AdjustmentCooldown time.Duration  `yaml:"adjustment_cooldown"` // Time to wait between adjustments
 	QueryResultLimit   int            `yaml:"query_result_limit"`  // Limit on text search results
+
+	// Token-based FTS configuration (for cost_model mode)
+	Mode                 string            `yaml:"mode"`        // "benchmark" or "cost_model"
+	TextShards           []int             `yaml:"text_shards"` // Array of shard values to randomly select from
+	QueryParameters      []QueryParameters `yaml:"query_parameters"`
+	QueryResultLimits    []int             `yaml:"query_result_limits"` // Array of limit values to randomly select from
+	UseRandomQueries     bool              `yaml:"use_random_queries"`
+	RandomTestRuns       int               `yaml:"random_test_runs"`
+	RandomQuerySeed      string            `yaml:"random_query_seed"` // Fixed seed for reproducible random queries (e.g., "quossa")
+	RandomQueryMaxParams QueryParameters   `yaml:"random_query_max_parameters"`
+}
+
+// QueryParameters defines the shape of a text search query
+type QueryParameters struct {
+	PositiveTerms   int `yaml:"positive_terms"`
+	NegativeTerms   int `yaml:"negative_terms"`
+	PositivePhrases int `yaml:"positive_phrases"`
+	NegativePhrases int `yaml:"negative_phrases"`
+	PhraseLength    int `yaml:"phrase_length"`
 }
 
 // ReadWriteRatio defines the ratio of read vs write operations

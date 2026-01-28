@@ -7,12 +7,19 @@ import (
 
 // Document represents a document in the benchmark collection
 type Document struct {
-	ID          string    `bson:"_id,omitempty"`
-	Title       string    `bson:"title"`
-	Content     string    `bson:"content"`
-	Tags        []string  `bson:"tags"`
-	CreatedAt   time.Time `bson:"created_at"`
-	SearchTerms string    `bson:"search_terms"`
+	// Original fields (for benchmark mode)
+	ID          string   `bson:"_id,omitempty"`
+	Title       string   `bson:"title,omitempty"`
+	Content     string   `bson:"content,omitempty"`
+	Tags        []string `bson:"tags,omitempty"`
+	SearchTerms string   `bson:"search_terms,omitempty"`
+
+	// Token-based fields (for cost_model mode)
+	Text1 string `bson:"text1,omitempty"`
+	Text2 string `bson:"text2,omitempty"`
+	Text3 string `bson:"text3,omitempty"`
+
+	CreatedAt time.Time `bson:"created_at"`
 }
 
 // DatabaseMetrics represents database performance metrics
@@ -34,14 +41,21 @@ type Database interface {
 
 	// Index management
 	CreateTextIndex(ctx context.Context) error
+	CreateTextIndexForCollection(ctx context.Context, collectionName string, shardNumber int) error
 	DropIndexes(ctx context.Context) error
+	DropIndexesForCollection(ctx context.Context, collectionName string) error
 
 	// Data operations
 	ExecuteTextSearch(ctx context.Context, query string, limit int) (int, error)
+	ExecuteTextSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
 	InsertDocument(ctx context.Context, doc Document) error
+	InsertDocumentInCollection(ctx context.Context, collectionName string, doc Document) error
 	InsertDocuments(ctx context.Context, docs []Document) error
+	InsertDocumentsInCollection(ctx context.Context, collectionName string, docs []Document) error
 	CountDocuments(ctx context.Context) (int64, error)
+	CountDocumentsInCollection(ctx context.Context, collectionName string) (int64, error)
 	DropCollection(ctx context.Context) error
+	DropCollectionByName(ctx context.Context, collectionName string) error
 
 	// Metrics and monitoring
 	GetMetrics(ctx context.Context) (DatabaseMetrics, error)

@@ -76,7 +76,7 @@ func (wp *WorkerPool) Start() error {
 	}
 
 	wp.started = true
-	slog.Info("Starting worker pool", "total_workers", wp.config.WorkerCount)
+	slog.Info("Starting worker pool", "total_workers", wp.config.WorkerCount, "mode", wp.config.Mode)
 
 	// Calculate worker distribution based on read/write ratio
 	readWorkerCount := int(float64(wp.config.WorkerCount) * float64(wp.config.ReadWriteRatio.ReadPercent) / 100.0)
@@ -92,6 +92,9 @@ func (wp *WorkerPool) Start() error {
 		readWorkerCount--
 	}
 
+	// Check if we're in cost_model mode
+	isCostModelMode := wp.config.Mode == "cost_model"
+
 	// Create read workers
 	for i := 0; i < readWorkerCount; i++ {
 		worker := NewReadWorker(
@@ -102,6 +105,42 @@ func (wp *WorkerPool) Start() error {
 			wp.rateLimiter,
 			wp.config.QueryResultLimit,
 		)
+
+		// Configure for cost_model mode if needed
+		if isCostModelMode && len(wp.config.QueryParameters) > 0 {
+			// Get base collection name from database
+			baseCollection := wp.database.GetConnectionInfo().Collection
+
+			// Pre-generate query shapes if using random queries (matches Java reference implementation)
+			var queryParams []config.QueryParameters
+			if wp.config.UseRandomQueries && wp.config.RandomTestRuns > 0 {
+				// Generate N random query shapes once at startup using fixed seed
+				seed := wp.config.RandomQuerySeed
+				if seed == "" {
+					seed = "quossa" // Default seed for reproducibility
+				}
+				slog.Info("Pre-generating random query shapes",
+					"count", wp.config.RandomTestRuns,
+					"seed", seed)
+				queryParams = generator.GenerateQueryShapes(seed, wp.config.RandomTestRuns, wp.config.RandomQueryMaxParams)
+			} else {
+				// Use fixed query shapes from configuration
+				queryParams = wp.config.QueryParameters
+			}
+
+			// Create QueryRequest with all multi-dimensional parameters
+			queryRequest := generator.QueryRequest{
+				BaseCollectionName: baseCollection,
+				TextShards:         wp.config.TextShards,
+				QueryParams:        queryParams, // Now contains either fixed or pre-generated shapes
+				Limits:             wp.config.QueryResultLimits,
+				UseRandomQueries:   false, // Never generate on-the-fly, always select from queryParams
+				RandomMaxParams:    wp.config.RandomQueryMaxParams,
+			}
+
+			worker.SetCostModelMode(true, queryRequest)
+		}
+
 		wp.readers = append(wp.readers, worker)
 	}
 
@@ -116,6 +155,19 @@ func (wp *WorkerPool) Start() error {
 			wp.metrics,
 			wp.rateLimiter,
 		)
+
+		// Configure for cost_model mode if needed
+		if isCostModelMode {
+			// Find max textShard value for data distribution
+			maxTextShard := 0
+			for _, shard := range wp.config.TextShards {
+				if shard > maxTextShard {
+					maxTextShard = shard
+				}
+			}
+			worker.SetCostModelMode(true, maxTextShard, wp.config.WorkerCount)
+		}
+
 		wp.writers = append(wp.writers, worker)
 	}
 
