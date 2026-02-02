@@ -38,6 +38,7 @@ type WorkloadConfig struct {
 
 	// Token-based FTS configuration (for cost_model mode)
 	Mode                 string            `yaml:"mode"`        // "benchmark" or "cost_model"
+	SearchType           string            `yaml:"search_type"` // "text" or "atlas_search"
 	TextShards           []int             `yaml:"text_shards"` // Array of shard values to randomly select from
 	QueryParameters      []QueryParameters `yaml:"query_parameters"`
 	QueryResultLimits    []int             `yaml:"query_result_limits"` // Array of limit values to randomly select from

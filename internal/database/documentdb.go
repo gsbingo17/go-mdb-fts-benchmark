@@ -373,3 +373,33 @@ func (d *DocumentDBClient) GetConnectionInfo() ConnectionInfo {
 		Collection: d.config.Collection,
 	}
 }
+
+// CreateSearchIndex - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) CreateSearchIndex(ctx context.Context) error {
+	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
+}
+
+// CreateSearchIndexForCollection - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) CreateSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
+}
+
+// DropSearchIndexes - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) DropSearchIndexes(ctx context.Context) error {
+	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB")
+}
+
+// DropSearchIndexesForCollection - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) DropSearchIndexesForCollection(ctx context.Context, collectionName string) error {
+	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB")
+}
+
+// ExecuteAtlasSearch - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) ExecuteAtlasSearch(ctx context.Context, query string, limit int) (int, error) {
+	return 0, fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
+}
+
+// ExecuteAtlasSearchInCollection - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
+	return 0, fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
+}

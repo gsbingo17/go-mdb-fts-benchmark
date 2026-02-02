@@ -25,6 +25,9 @@ type ReadWorker struct {
 	// Cost model mode configuration
 	isCostModelMode bool
 	queryRequest    generator.QueryRequest // Single request object with all query generation parameters
+
+	// Search type configuration
+	searchType string // "text" or "atlas_search"
 }
 
 // OperationLog tracks individual operations for analysis
@@ -56,6 +59,7 @@ func NewReadWorker(
 		operationLog:    make([]OperationLog, 0, 1000),
 		queryLimit:      queryLimit,
 		isCostModelMode: false,
+		searchType:      "text", // Default to $text search
 	}
 }
 
@@ -63,6 +67,11 @@ func NewReadWorker(
 func (rw *ReadWorker) SetCostModelMode(enabled bool, queryRequest generator.QueryRequest) {
 	rw.isCostModelMode = enabled
 	rw.queryRequest = queryRequest
+}
+
+// SetSearchType configures the search type ("text" or "atlas_search")
+func (rw *ReadWorker) SetSearchType(searchType string) {
+	rw.searchType = searchType
 }
 
 // Start begins the read worker operations
@@ -105,20 +114,37 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 		// Use QueryRequest/QueryResult pattern for clean multi-dimensional query generation
 		queryResult := rw.workloadGen.GenerateTokenQueryRequest(rw.queryRequest)
 
-		// Execute with the generated query, collection, and limit from QueryResult
-		resultCount, err = rw.database.ExecuteTextSearchInCollection(
-			ctx,
-			queryResult.CollectionName,
-			queryResult.Query,
-			queryResult.Limit,
-		)
+		// Route to appropriate search method based on search_type
+		if rw.searchType == "atlas_search" {
+			resultCount, err = rw.database.ExecuteAtlasSearchInCollection(
+				ctx,
+				queryResult.CollectionName,
+				queryResult.Query,
+				queryResult.Limit,
+			)
+		} else {
+			// Default to $text search
+			resultCount, err = rw.database.ExecuteTextSearchInCollection(
+				ctx,
+				queryResult.CollectionName,
+				queryResult.Query,
+				queryResult.Limit,
+			)
+		}
 		query = queryResult.Query
 		collectionName = queryResult.CollectionName
 		textShard = queryResult.SelectedTextShard
 		limit = queryResult.Limit
 	} else {
 		query = rw.workloadGen.GenerateSearchQuery()
-		resultCount, err = rw.database.ExecuteTextSearch(ctx, query, rw.queryLimit)
+
+		// Route to appropriate search method based on search_type
+		if rw.searchType == "atlas_search" {
+			resultCount, err = rw.database.ExecuteAtlasSearch(ctx, query, rw.queryLimit)
+		} else {
+			// Default to $text search
+			resultCount, err = rw.database.ExecuteTextSearch(ctx, query, rw.queryLimit)
+		}
 		limit = rw.queryLimit
 	}
 
@@ -155,11 +181,13 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 				"text_shard", textShard,
 				"limit", limit,
 				"query", query,
+				"search_type", rw.searchType,
 				"latency_us", latency.Microseconds())
 		} else {
 			slog.Debug("Zero results query",
 				"worker_id", rw.id,
 				"query", query,
+				"search_type", rw.searchType,
 				"latency_us", latency.Microseconds())
 		}
 	} else {
@@ -170,12 +198,14 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 				"text_shard", textShard,
 				"limit", limit,
 				"query", query,
+				"search_type", rw.searchType,
 				"result_count", resultCount,
 				"latency_us", latency.Microseconds())
 		} else {
 			slog.Debug("Successful search",
 				"worker_id", rw.id,
 				"query", query,
+				"search_type", rw.searchType,
 				"result_count", resultCount,
 				"latency_us", latency.Microseconds())
 		}
@@ -190,12 +220,14 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 				"text_shard", textShard,
 				"limit", limit,
 				"query", query,
+				"search_type", rw.searchType,
 				"latency_us", latency.Microseconds(),
 				"result_count", resultCount)
 		} else {
 			slog.Warn("Slow query detected",
 				"worker_id", rw.id,
 				"query", query,
+				"search_type", rw.searchType,
 				"latency_us", latency.Microseconds(),
 				"result_count", resultCount)
 		}

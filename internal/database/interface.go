@@ -45,9 +45,17 @@ type Database interface {
 	DropIndexes(ctx context.Context) error
 	DropIndexesForCollection(ctx context.Context, collectionName string) error
 
+	// Atlas Search index management
+	CreateSearchIndex(ctx context.Context) error
+	CreateSearchIndexForCollection(ctx context.Context, collectionName string) error
+	DropSearchIndexes(ctx context.Context) error
+	DropSearchIndexesForCollection(ctx context.Context, collectionName string) error
+
 	// Data operations
 	ExecuteTextSearch(ctx context.Context, query string, limit int) (int, error)
 	ExecuteTextSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
+	ExecuteAtlasSearch(ctx context.Context, query string, limit int) (int, error)
+	ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
 	InsertDocument(ctx context.Context, doc Document) error
 	InsertDocumentInCollection(ctx context.Context, collectionName string, doc Document) error
 	InsertDocuments(ctx context.Context, docs []Document) error

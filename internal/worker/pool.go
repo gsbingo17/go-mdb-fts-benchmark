@@ -141,6 +141,13 @@ func (wp *WorkerPool) Start() error {
 			worker.SetCostModelMode(true, queryRequest)
 		}
 
+		// Set search type (default to "text" if not specified)
+		searchType := wp.config.SearchType
+		if searchType == "" {
+			searchType = "text"
+		}
+		worker.SetSearchType(searchType)
+
 		wp.readers = append(wp.readers, worker)
 	}
 
@@ -262,6 +269,14 @@ func (wp *WorkerPool) scaleUp(additionalWorkers int) error {
 			wp.rateLimiter,
 			wp.config.QueryResultLimit,
 		)
+
+		// Set search type (default to "text" if not specified)
+		searchType := wp.config.SearchType
+		if searchType == "" {
+			searchType = "text"
+		}
+		worker.SetSearchType(searchType)
+
 		wp.readers = append(wp.readers, worker)
 
 		// Create individual context and waitgroup for this worker

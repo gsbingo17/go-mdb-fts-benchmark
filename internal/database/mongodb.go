@@ -368,3 +368,132 @@ func (m *MongoDBClient) GetConnectionInfo() ConnectionInfo {
 		Collection: m.config.Collection,
 	}
 }
+
+// CreateSearchIndex creates Atlas Search index for default collection
+func (m *MongoDBClient) CreateSearchIndex(ctx context.Context) error {
+	return m.CreateSearchIndexForCollection(ctx, m.config.Collection)
+}
+
+// CreateSearchIndexForCollection creates a uniform Atlas Search index
+// Unlike $text indexes, all collection shards use the SAME index definition
+// indexing all three fields: text1, text2, text3
+func (m *MongoDBClient) CreateSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	coll := m.database.Collection(collectionName)
+
+	// Atlas Search index definition (Lucene-based)
+	// All shards index all three fields for fair performance comparison
+	indexDefinition := bson.D{
+		{Key: "mappings", Value: bson.D{
+			{Key: "dynamic", Value: false},
+			{Key: "fields", Value: bson.D{
+				{Key: "text1", Value: bson.D{
+					{Key: "type", Value: "string"},
+					{Key: "analyzer", Value: "lucene.standard"},
+				}},
+				{Key: "text2", Value: bson.D{
+					{Key: "type", Value: "string"},
+					{Key: "analyzer", Value: "lucene.standard"},
+				}},
+				{Key: "text3", Value: bson.D{
+					{Key: "type", Value: "string"},
+					{Key: "analyzer", Value: "lucene.standard"},
+				}},
+			}},
+		}},
+	}
+
+	searchIndexModel := mongo.SearchIndexModel{
+		Definition: indexDefinition,
+		Options:    options.SearchIndexes().SetName("default"),
+	}
+
+	_, err := coll.SearchIndexes().CreateOne(ctx, searchIndexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create Atlas Search index for collection %s: %w", collectionName, err)
+	}
+
+	return nil
+}
+
+// DropSearchIndexes drops all Atlas Search indexes for default collection
+func (m *MongoDBClient) DropSearchIndexes(ctx context.Context) error {
+	return m.DropSearchIndexesForCollection(ctx, m.config.Collection)
+}
+
+// DropSearchIndexesForCollection drops Atlas Search indexes for a specific collection
+func (m *MongoDBClient) DropSearchIndexesForCollection(ctx context.Context, collectionName string) error {
+	coll := m.database.Collection(collectionName)
+
+	// List all search indexes
+	cursor, err := coll.SearchIndexes().List(ctx, options.SearchIndexes().SetName(""))
+	if err != nil {
+		return fmt.Errorf("failed to list search indexes: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	// Drop each index
+	var indexes []bson.M
+	if err := cursor.All(ctx, &indexes); err != nil {
+		return fmt.Errorf("failed to decode search indexes: %w", err)
+	}
+
+	for _, idx := range indexes {
+		if name, ok := idx["name"].(string); ok {
+			if err := coll.SearchIndexes().DropOne(ctx, name); err != nil {
+				return fmt.Errorf("failed to drop search index %s: %w", name, err)
+			}
+		}
+	}
+
+	return nil
+}
+
+// ExecuteAtlasSearch performs Atlas Search on default collection
+func (m *MongoDBClient) ExecuteAtlasSearch(ctx context.Context, query string, limit int) (int, error) {
+	return m.ExecuteAtlasSearchInCollection(ctx, m.config.Collection, query, limit)
+}
+
+// ExecuteAtlasSearchInCollection performs Atlas Search using $search aggregation
+func (m *MongoDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
+	coll := m.database.Collection(collectionName)
+
+	// Build $search aggregation pipeline
+	pipeline := mongo.Pipeline{
+		// Stage 1: $search
+		{{Key: "$search", Value: bson.D{
+			{Key: "index", Value: "default"},
+			{Key: "text", Value: bson.D{
+				{Key: "query", Value: query},
+				{Key: "path", Value: bson.A{"text1", "text2", "text3"}},
+			}},
+		}}},
+	}
+
+	// Stage 2: $limit (if specified)
+	if limit > 0 {
+		pipeline = append(pipeline, bson.D{{Key: "$limit", Value: limit}})
+	}
+
+	// Stage 3: Project with search score
+	pipeline = append(pipeline, bson.D{{Key: "$project", Value: bson.D{
+		{Key: "_id", Value: 1},
+		{Key: "score", Value: bson.D{{Key: "$meta", Value: "searchScore"}}},
+	}}})
+
+	cursor, err := coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, fmt.Errorf("Atlas Search failed in collection %s: %w", collectionName, err)
+	}
+	defer cursor.Close(ctx)
+
+	count := 0
+	for cursor.Next(ctx) {
+		count++
+	}
+
+	if err := cursor.Err(); err != nil {
+		return 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	return count, nil
+}

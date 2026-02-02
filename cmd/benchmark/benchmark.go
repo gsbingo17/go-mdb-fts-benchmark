@@ -270,12 +270,8 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 	slog.Info("Setting up database schema and data", "mode", br.config.Workload.Mode)
 
-	// Create text indexes based on mode
-	if err := br.createTextIndexForMode(ctx); err != nil {
-		return fmt.Errorf("failed to create text index: %w", err)
-	}
-
-	// Check if we need to seed data
+	// Check if we need to seed data FIRST (before creating indexes)
+	// This is critical for Atlas Search which requires collections to exist before indexing
 	var count int64
 	var err error
 
@@ -285,7 +281,9 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 		for _, collectionName := range collections {
 			collCount, err := br.database.CountDocumentsInCollection(ctx, collectionName)
 			if err != nil {
-				return fmt.Errorf("failed to count documents in collection %s: %w", collectionName, err)
+				// Collection doesn't exist yet - that's OK, count will be 0
+				slog.Debug("Collection does not exist yet", "collection", collectionName)
+				continue
 			}
 			count += collCount
 		}
@@ -295,7 +293,9 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 	} else {
 		count, err = br.database.CountDocuments(ctx)
 		if err != nil {
-			return fmt.Errorf("failed to count documents: %w", err)
+			// Collection doesn't exist yet - that's OK, count will be 0
+			slog.Debug("Collection does not exist yet")
+			count = 0
 		}
 	}
 
@@ -311,39 +311,83 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 		}
 	}
 
+	// Create indexes AFTER data is seeded (required for Atlas Search)
+	if err := br.createTextIndexForMode(ctx); err != nil {
+		return fmt.Errorf("failed to create search index: %w", err)
+	}
+
 	slog.Info("Database setup completed", "document_count", requiredDocuments, "mode", br.config.Workload.Mode)
 	return nil
 }
 
-// createTextIndexForMode creates the appropriate text index based on the workload mode
+// createTextIndexForMode creates the appropriate text index based on the workload mode and search type
 func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 	isCostModelMode := br.config.Workload.Mode == "cost_model"
+	searchType := br.config.Workload.SearchType
+	if searchType == "" {
+		searchType = "text" // Default to $text search
+	}
 
 	if isCostModelMode {
-		slog.Info("Creating token-based text indexes for multi-collection setup",
-			"text_shards", br.config.Workload.TextShards,
-			"base_collection", br.config.Database.Collection)
-
 		// Get all shard collection names
 		collections := br.getAllShardCollections()
 
-		// Create progressive indexes for each shard collection based on the TextShards array values
-		for i, collectionName := range collections {
-			shardNumber := br.config.Workload.TextShards[i] // Use the actual shard number from array
-			slog.Info("Creating progressive text index for collection",
-				"collection", collectionName,
-				"shard", shardNumber,
-				"fields", getIndexFieldsDescription(shardNumber))
-			if err := br.database.CreateTextIndexForCollection(ctx, collectionName, shardNumber); err != nil {
-				return fmt.Errorf("failed to create index for collection %s: %w", collectionName, err)
+		if searchType == "atlas_search" {
+			// Atlas Search: uniform index across all shards (all fields indexed)
+			slog.Info("Creating uniform Atlas Search indexes for multi-collection setup",
+				"search_type", "atlas_search",
+				"text_shards", br.config.Workload.TextShards,
+				"base_collection", br.config.Database.Collection,
+				"index_strategy", "uniform (all fields: text1, text2, text3)")
+
+			for _, collectionName := range collections {
+				slog.Info("Creating uniform Atlas Search index for collection",
+					"collection", collectionName,
+					"fields", "text1, text2, text3 (all fields)")
+				if err := br.database.CreateSearchIndexForCollection(ctx, collectionName); err != nil {
+					return fmt.Errorf("failed to create Atlas Search index for collection %s: %w", collectionName, err)
+				}
 			}
+
+			slog.Info("Successfully created Atlas Search indexes for all shard collections",
+				"count", len(collections),
+				"index_type", "atlas_search_uniform")
+		} else {
+			// $text search: progressive indexing based on shard number
+			slog.Info("Creating progressive $text indexes for multi-collection setup",
+				"search_type", "text",
+				"text_shards", br.config.Workload.TextShards,
+				"base_collection", br.config.Database.Collection,
+				"index_strategy", "progressive")
+
+			for i, collectionName := range collections {
+				shardNumber := br.config.Workload.TextShards[i] // Use the actual shard number from array
+				slog.Info("Creating progressive $text index for collection",
+					"collection", collectionName,
+					"shard", shardNumber,
+					"fields", getIndexFieldsDescription(shardNumber))
+				if err := br.database.CreateTextIndexForCollection(ctx, collectionName, shardNumber); err != nil {
+					return fmt.Errorf("failed to create $text index for collection %s: %w", collectionName, err)
+				}
+			}
+
+			slog.Info("Successfully created $text indexes for all shard collections",
+				"count", len(collections),
+				"index_type", "text_progressive")
 		}
 
-		slog.Info("Successfully created text indexes for all shard collections", "count", len(collections))
 		return nil
 	} else {
-		slog.Info("Creating standard text index (title, content, search_terms)")
-		return br.database.CreateTextIndex(ctx)
+		// Benchmark mode: standard index on default collection
+		if searchType == "atlas_search" {
+			slog.Info("Creating Atlas Search index (standard fields)",
+				"search_type", "atlas_search")
+			return br.database.CreateSearchIndex(ctx)
+		} else {
+			slog.Info("Creating standard $text index (title, content, search_terms)",
+				"search_type", "text")
+			return br.database.CreateTextIndex(ctx)
+		}
 	}
 }
 
