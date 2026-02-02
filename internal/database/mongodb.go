@@ -2,6 +2,7 @@ package database
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -11,6 +12,15 @@ import (
 
 	"mongodb-benchmarking-tool/internal/config"
 )
+
+// bsonToJSON converts a BSON document to a compact JSON string for logging
+func bsonToJSON(doc interface{}) string {
+	jsonBytes, err := json.Marshal(doc)
+	if err != nil {
+		return fmt.Sprintf("<error serializing: %v>", err)
+	}
+	return string(jsonBytes)
+}
 
 // MongoDBClient implements the Database interface for MongoDB
 type MongoDBClient struct {
@@ -457,16 +467,20 @@ func (m *MongoDBClient) ExecuteAtlasSearch(ctx context.Context, query string, li
 func (m *MongoDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
 	coll := m.database.Collection(collectionName)
 
+	// Parse the query string into structured components
+	parsed := ParseSearchQuery(query)
+
+	// Build the appropriate Atlas Search query structure
+	searchPaths := []string{"text1", "text2", "text3"}
+	searchQuery := BuildAtlasSearchQuery(parsed, "default", searchPaths)
+
+	// Debug log the raw Atlas Search query structure
+	fmt.Printf("DEBUG: Atlas Search - input_query=%s raw_query=%s\n", query, bsonToJSON(searchQuery))
+
 	// Build $search aggregation pipeline
 	pipeline := mongo.Pipeline{
-		// Stage 1: $search
-		{{Key: "$search", Value: bson.D{
-			{Key: "index", Value: "default"},
-			{Key: "text", Value: bson.D{
-				{Key: "query", Value: query},
-				{Key: "path", Value: bson.A{"text1", "text2", "text3"}},
-			}},
-		}}},
+		// Stage 1: $search with properly structured query
+		{{Key: "$search", Value: searchQuery}},
 	}
 
 	// Stage 2: $limit (if specified)
