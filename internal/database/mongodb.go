@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
@@ -475,7 +476,7 @@ func (m *MongoDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, coll
 	searchQuery := BuildAtlasSearchQuery(parsed, "default", searchPaths)
 
 	// Debug log the raw Atlas Search query structure
-	fmt.Printf("DEBUG: Atlas Search - input_query=%s raw_query=%s\n", query, bsonToJSON(searchQuery))
+	slog.Debug("Atlas Search query", "input_query", query, "raw_query", bsonToJSON(searchQuery))
 
 	// Build $search aggregation pipeline
 	pipeline := mongo.Pipeline{
