@@ -74,24 +74,29 @@ func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float6
 		EndTime:   timestamppb.New(endTime),
 	}
 
-	// Create the request
+	// Create the request with proper cross-series aggregation
+	// This sums user CPU (is_system=false) + system CPU (is_system=true)
 	req := &monitoringpb.ListTimeSeriesRequest{
 		Name:     fmt.Sprintf("projects/%s", c.projectID),
 		Filter:   filter,
 		Interval: interval,
 		Aggregation: &monitoringpb.Aggregation{
-			AlignmentPeriod:  durationpb.New(60 * time.Second), // 1 minute alignment
-			PerSeriesAligner: monitoringpb.Aggregation_ALIGN_MEAN,
+			AlignmentPeriod:    durationpb.New(60 * time.Second), // 1 minute alignment
+			PerSeriesAligner:   monitoringpb.Aggregation_ALIGN_MEAN,
+			CrossSeriesReducer: monitoringpb.Aggregation_REDUCE_SUM, // Sum across is_system dimension
+			GroupByFields:      []string{"metric.labels.database"},  // Group by database
 		},
 	}
 
 	// Execute the request
 	it := c.client.ListTimeSeries(ctx, req)
 
-	// Get the latest value
+	// Collect all time series for debugging
 	var latestValue float64
 	var latestTime time.Time
 	hasData := false
+	seriesCount := 0
+	var seriesDetails []string
 
 	for {
 		ts, err := it.Next()
@@ -102,17 +107,31 @@ func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float6
 			return 0, fmt.Errorf("failed to fetch time series: %w", err)
 		}
 
-		// Get the most recent point
+		seriesCount++
+
+		// Get the most recent point from this time series
 		if len(ts.Points) > 0 {
 			for _, point := range ts.Points {
 				pointTime := point.Interval.EndTime.AsTime()
+				value := point.Value.GetDoubleValue()
+
+				// Track series details for logging
+				seriesDetails = append(seriesDetails, fmt.Sprintf("value=%.4f timestamp=%s",
+					value, pointTime.Format("15:04:05")))
+
 				if pointTime.After(latestTime) {
 					latestTime = pointTime
-					latestValue = point.Value.GetDoubleValue()
+					latestValue = value
 					hasData = true
 				}
 			}
 		}
+	}
+
+	// Log detailed aggregation info
+	fmt.Printf("DEBUG: Fetched %d time series from Cloud Monitoring\n", seriesCount)
+	for i, detail := range seriesDetails {
+		fmt.Printf("  Series %d: %s\n", i+1, detail)
 	}
 
 	if !hasData {
