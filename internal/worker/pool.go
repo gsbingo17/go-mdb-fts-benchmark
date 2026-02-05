@@ -165,14 +165,10 @@ func (wp *WorkerPool) Start() error {
 
 		// Configure for cost_model mode if needed
 		if isCostModelMode {
-			// Find max textShard value for data distribution
-			maxTextShard := 0
-			for _, shard := range wp.config.TextShards {
-				if shard > maxTextShard {
-					maxTextShard = shard
-				}
-			}
-			worker.SetCostModelMode(true, maxTextShard, wp.config.WorkerCount)
+			// Get base collection name from database
+			baseCollection := wp.database.GetConnectionInfo().Collection
+
+			worker.SetCostModelMode(true, wp.config.TextShards, wp.config.WorkerCount, baseCollection)
 		}
 
 		wp.writers = append(wp.writers, worker)

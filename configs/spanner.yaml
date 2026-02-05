@@ -1,0 +1,106 @@
+# Google Cloud Spanner Benchmark Configuration
+
+database:
+  type: "spanner"
+  project_id: "fts-benchmark-001"
+  instance_id: "ftsdb"
+  database: "ftsdb"
+  table: "SearchWords"  # Base table name (will create SearchWords1, SearchWords2, SearchWords3)
+  credentials_file: ""  # Path to GCP credentials JSON (optional, uses default credentials if empty)
+  max_sessions: 400     # Maximum sessions in pool
+  min_sessions: 100     # Minimum sessions in pool
+
+workload:
+  # Workload mode and search type
+  mode: "cost_model"           # Use cost_model for token-based documents
+  search_type: "text"  # Use Atlas Search instead of $text
+
+  # Read/write ratio
+  read_write_ratio:
+    read_percent: 100
+    write_percent: 0
+
+  # Benchmark duration and performance
+  duration: 30m
+  target_qps: 100
+  worker_count: 10
+  dataset_size: 10000
+
+
+  # CPU saturation targeting
+  saturation_target: 70.0
+  warmup_duration: 2m
+  stability_window: 3m
+  adjustment_cooldown: 30s
+
+  # Token-based FTS configuration
+  # Tables will be created for each shard: SearchWords1, SearchWords2, SearchWords3
+  text_shards: [1, 2, 3]
+
+  # Query parameters for testing different query complexity
+  query_parameters:
+    # Simple queries - single positive term
+    - positive_terms: 1
+      negative_terms: 0
+      positive_phrases: 0
+      negative_phrases: 0
+      phrase_length: 20
+    
+    # Exclusion queries - single negative term
+    - positive_terms: 0
+      negative_terms: 1
+      positive_phrases: 0
+      negative_phrases: 0
+      phrase_length: 20
+    
+    # Phrase queries - single phrase of 20 tokens
+    - positive_terms: 0
+      negative_terms: 0
+      positive_phrases: 1
+      negative_phrases: 0
+      phrase_length: 20
+    
+    # Negative phrase queries
+    - positive_terms: 0
+      negative_terms: 0
+      positive_phrases: 0
+      negative_phrases: 1
+      phrase_length: 20
+    
+    # Complex mixed query
+    - positive_terms: 2
+      negative_terms: 1
+      positive_phrases: 1
+      negative_phrases: 0
+      phrase_length: 5
+
+  # Query result limits to test
+  query_result_limits: [10, 50, 100]
+
+  # Random query generation (optional)
+  use_random_queries: false
+  random_test_runs: 0
+  random_query_seed: "quossa"
+  random_query_max_parameters:
+    positive_terms: 3
+    negative_terms: 1
+    positive_phrases: 1
+    negative_phrases: 1
+    phrase_length: 3
+
+metrics:
+  collection_interval: 10s
+  export_interval: 60s
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+cost:
+  provider: "gcp"
+  currency_code: "USD"
+  calculation_mode: "realtime"
+  
+  gcp:
+    hourly_cost: 1.23
+    storage_cost_per_gb: 0

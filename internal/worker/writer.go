@@ -2,6 +2,7 @@ package worker
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -23,8 +24,9 @@ type WriteWorker struct {
 
 	// Cost model mode configuration
 	isCostModelMode bool
-	textShards      int
+	textShards      []int // Array of shard numbers (e.g., [1, 2, 3])
 	workerCount     int
+	baseCollection  string // Base collection name for shard tables
 }
 
 // NewWriteWorker creates a new write worker
@@ -43,16 +45,18 @@ func NewWriteWorker(
 		rateLimiter:     rateLimiter,
 		operationLog:    make([]OperationLog, 0, 1000),
 		isCostModelMode: false,
-		textShards:      0,
+		textShards:      nil,
 		workerCount:     0,
+		baseCollection:  "",
 	}
 }
 
 // SetCostModelMode configures the worker for cost_model mode
-func (ww *WriteWorker) SetCostModelMode(enabled bool, textShards int, workerCount int) {
+func (ww *WriteWorker) SetCostModelMode(enabled bool, textShards []int, workerCount int, baseCollection string) {
 	ww.isCostModelMode = enabled
 	ww.textShards = textShards
 	ww.workerCount = workerCount
+	ww.baseCollection = baseCollection
 }
 
 // Start begins the write worker operations
@@ -83,16 +87,31 @@ func (ww *WriteWorker) Start(ctx context.Context) {
 func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 	startTime := time.Now()
 
-	// Generate document based on mode
+	// Generate document and insert based on mode
+	var err error
 	var doc database.Document
-	if ww.isCostModelMode {
-		doc = ww.dataGenerator.GenerateTokenDocument(ww.textShards, ww.workerCount, ww.id)
-	} else {
-		doc = ww.dataGenerator.GenerateDocument()
-	}
 
-	// Insert the document
-	err := ww.database.InsertDocument(ctx, doc)
+	if ww.isCostModelMode {
+		// In cost_model mode, insert into a specific shard table
+		maxTextShard := 0
+		for _, shard := range ww.textShards {
+			if shard > maxTextShard {
+				maxTextShard = shard
+			}
+		}
+		doc = ww.dataGenerator.GenerateTokenDocument(maxTextShard, ww.workerCount, ww.id)
+
+		// Select shard table using round-robin based on worker ID
+		shardIndex := ww.id % len(ww.textShards)
+		shardNumber := ww.textShards[shardIndex]
+		collectionName := fmt.Sprintf("%s%d", ww.baseCollection, shardNumber)
+
+		err = ww.database.InsertDocumentInCollection(ctx, collectionName, doc)
+	} else {
+		// Standard mode - insert into default table
+		doc = ww.dataGenerator.GenerateDocument()
+		err = ww.database.InsertDocument(ctx, doc)
+	}
 
 	latency := time.Since(startTime)
 	success := err == nil

@@ -59,6 +59,23 @@ func applyDefaults(config *Config) error {
 		config.Database.Collection = "documents"
 	}
 
+	// Spanner-specific defaults
+	if config.Database.Type == "spanner" {
+		if config.Database.MaxSessions == 0 {
+			config.Database.MaxSessions = 400
+		}
+		if config.Database.MinSessions == 0 {
+			config.Database.MinSessions = 100
+		}
+		if config.Database.Table == "" {
+			config.Database.Table = "SearchWords"
+		}
+		// For Spanner, Collection should match Table for shard naming consistency
+		if config.Database.Collection == "documents" || config.Database.Collection == "" {
+			config.Database.Collection = config.Database.Table
+		}
+	}
+
 	// Workload defaults
 	if config.Workload.ReadWriteRatio.ReadPercent == 0 && config.Workload.ReadWriteRatio.WritePercent == 0 {
 		config.Workload.ReadWriteRatio.ReadPercent = 80
@@ -120,11 +137,27 @@ func validate(config *Config) error {
 	if config.Database.Type == "" {
 		return fmt.Errorf("database.type is required")
 	}
-	if config.Database.Type != "mongodb" && config.Database.Type != "documentdb" {
-		return fmt.Errorf("database.type must be 'mongodb' or 'documentdb'")
+	if config.Database.Type != "mongodb" && config.Database.Type != "documentdb" && config.Database.Type != "spanner" {
+		return fmt.Errorf("database.type must be 'mongodb', 'documentdb', or 'spanner'")
 	}
-	if config.Database.URI == "" {
-		return fmt.Errorf("database.uri is required")
+
+	// Type-specific validation
+	if config.Database.Type == "mongodb" || config.Database.Type == "documentdb" {
+		if config.Database.URI == "" {
+			return fmt.Errorf("database.uri is required for MongoDB and DocumentDB")
+		}
+	}
+
+	if config.Database.Type == "spanner" {
+		if config.Database.ProjectID == "" {
+			return fmt.Errorf("database.project_id is required for Spanner")
+		}
+		if config.Database.InstanceID == "" {
+			return fmt.Errorf("database.instance_id is required for Spanner")
+		}
+		if config.Database.Database == "" {
+			return fmt.Errorf("database.database is required for Spanner")
+		}
 	}
 
 	// Workload validation
@@ -183,8 +216,8 @@ func validate(config *Config) error {
 	if config.Cost.Provider == "" {
 		return fmt.Errorf("cost.provider is required")
 	}
-	if config.Cost.Provider != "atlas" && config.Cost.Provider != "documentdb" {
-		return fmt.Errorf("cost.provider must be 'atlas' or 'documentdb'")
+	if config.Cost.Provider != "atlas" && config.Cost.Provider != "documentdb" && config.Cost.Provider != "gcp" {
+		return fmt.Errorf("cost.provider must be 'atlas', 'documentdb', or 'gcp'")
 	}
 
 	validModes := map[string]bool{"realtime": true, "estimate": true}
@@ -210,6 +243,8 @@ func validate(config *Config) error {
 			return fmt.Errorf("cost.documentdb.cluster_id is required for DocumentDB provider")
 		}
 	}
+
+	// GCP provider has no specific required fields for now (future enhancement)
 
 	return nil
 }

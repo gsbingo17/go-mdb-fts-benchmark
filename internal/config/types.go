@@ -12,7 +12,7 @@ type Config struct {
 
 // DatabaseConfig holds database connection and setup parameters
 type DatabaseConfig struct {
-	Type             string `yaml:"type"` // "mongodb" or "documentdb"
+	Type             string `yaml:"type"` // "mongodb", "documentdb", or "spanner"
 	URI              string `yaml:"uri"`
 	Database         string `yaml:"database"`
 	Collection       string `yaml:"collection"`
@@ -21,6 +21,14 @@ type DatabaseConfig struct {
 	MaxConnIdleTime  int    `yaml:"max_conn_idle_time"` // seconds
 	ConnectTimeoutMs int    `yaml:"connect_timeout_ms"`
 	SocketTimeoutMs  int    `yaml:"socket_timeout_ms"`
+
+	// Google Cloud Spanner specific fields
+	ProjectID       string `yaml:"project_id"`       // GCP project ID
+	InstanceID      string `yaml:"instance_id"`      // Spanner instance ID
+	Table           string `yaml:"table"`            // Default table name (e.g., "SearchWords")
+	CredentialsFile string `yaml:"credentials_file"` // Path to GCP credentials JSON file (optional)
+	MaxSessions     int    `yaml:"max_sessions"`     // Maximum number of sessions in pool
+	MinSessions     int    `yaml:"min_sessions"`     // Minimum number of sessions in pool
 }
 
 // WorkloadConfig defines the benchmark workload parameters
@@ -75,9 +83,10 @@ type MetricsConfig struct {
 
 // CostConfig defines cost calculation parameters
 type CostConfig struct {
-	Provider        string               `yaml:"provider"` // "atlas" or "documentdb"
+	Provider        string               `yaml:"provider"` // "atlas", "documentdb", or "gcp"
 	Atlas           AtlasCostConfig      `yaml:"atlas,omitempty"`
 	DocumentDB      DocumentDBCostConfig `yaml:"documentdb,omitempty"`
+	GCP             GCPCostConfig        `yaml:"gcp,omitempty"`
 	CurrencyCode    string               `yaml:"currency_code"`
 	CalculationMode string               `yaml:"calculation_mode"` // "realtime" or "estimate"
 }
@@ -100,4 +109,10 @@ type DocumentDBCostConfig struct {
 	HourlyCost       float64 `yaml:"hourly_cost"`
 	StorageCostPerGB float64 `yaml:"storage_cost_per_gb"`
 	IOCostPer1MReqs  float64 `yaml:"io_cost_per_1m_requests"`
+}
+
+// GCPCostConfig holds Google Cloud Platform specific cost parameters
+type GCPCostConfig struct {
+	HourlyCost       float64 `yaml:"hourly_cost"`
+	StorageCostPerGB float64 `yaml:"storage_cost_per_gb"`
 }

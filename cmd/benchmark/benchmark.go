@@ -17,6 +17,7 @@ import (
 type BenchmarkRunner struct {
 	config               *config.Config
 	database             database.Database
+	spannerClient        *database.SpannerClient // Reference to Spanner client if used
 	metricsCollector     *metrics.MetricsCollector
 	costCalculator       *metrics.CostCalculator
 	exporter             *metrics.Exporter
@@ -72,8 +73,17 @@ func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 		}
 
 		db = docdbClient
+	case "spanner":
+		db = database.NewSpannerClient(cfg.Database)
+		slog.Info("Google Cloud Spanner client created with built-in metrics collection")
 	default:
 		return nil, fmt.Errorf("unsupported database type: %s", cfg.Database.Type)
+	}
+
+	// Save reference to Spanner client before wrapping (needed for table creation)
+	var spannerClient *database.SpannerClient
+	if cfg.Database.Type == "spanner" {
+		spannerClient = db.(*database.SpannerClient)
 	}
 
 	// Create metrics components
@@ -101,6 +111,7 @@ func NewBenchmarkRunner(cfg *config.Config) (*BenchmarkRunner, error) {
 	runner := &BenchmarkRunner{
 		config:             cfg,
 		database:           db,
+		spannerClient:      spannerClient,
 		metricsCollector:   metricsCollector,
 		costCalculator:     costCalculator,
 		exporter:           exporter,
@@ -270,6 +281,13 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 	slog.Info("Setting up database schema and data", "mode", br.config.Workload.Mode)
 
+	// For Spanner, create tables first (required before any data operations)
+	if br.config.Database.Type == "spanner" {
+		if err := br.createSpannerTables(ctx); err != nil {
+			return fmt.Errorf("failed to create Spanner tables: %w", err)
+		}
+	}
+
 	// Check if we need to seed data FIRST (before creating indexes)
 	// This is critical for Atlas Search which requires collections to exist before indexing
 	var count int64
@@ -328,30 +346,39 @@ func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 		searchType = "text" // Default to $text search
 	}
 
+	// For Spanner, always use SEARCH indexes (uniform across all fields)
+	if br.config.Database.Type == "spanner" {
+		searchType = "spanner_search"
+	}
+
 	if isCostModelMode {
 		// Get all shard collection names
 		collections := br.getAllShardCollections()
 
-		if searchType == "atlas_search" {
-			// Atlas Search: uniform index across all shards (all fields indexed)
-			slog.Info("Creating uniform Atlas Search indexes for multi-collection setup",
-				"search_type", "atlas_search",
+		if searchType == "atlas_search" || searchType == "spanner_search" {
+			// Atlas Search / Spanner SEARCH: uniform index across all shards (all fields indexed)
+			indexType := "Atlas Search"
+			if searchType == "spanner_search" {
+				indexType = "Spanner SEARCH"
+			}
+			slog.Info(fmt.Sprintf("Creating uniform %s indexes for multi-collection setup", indexType),
+				"search_type", searchType,
 				"text_shards", br.config.Workload.TextShards,
 				"base_collection", br.config.Database.Collection,
 				"index_strategy", "uniform (all fields: text1, text2, text3)")
 
 			for _, collectionName := range collections {
-				slog.Info("Creating uniform Atlas Search index for collection",
+				slog.Info(fmt.Sprintf("Creating uniform %s index for collection", indexType),
 					"collection", collectionName,
 					"fields", "text1, text2, text3 (all fields)")
 				if err := br.database.CreateSearchIndexForCollection(ctx, collectionName); err != nil {
-					return fmt.Errorf("failed to create Atlas Search index for collection %s: %w", collectionName, err)
+					return fmt.Errorf("failed to create %s index for collection %s: %w", indexType, collectionName, err)
 				}
 			}
 
-			slog.Info("Successfully created Atlas Search indexes for all shard collections",
+			slog.Info(fmt.Sprintf("Successfully created %s indexes for all shard collections", indexType),
 				"count", len(collections),
-				"index_type", "atlas_search_uniform")
+				"index_type", searchType+"_uniform")
 		} else {
 			// $text search: progressive indexing based on shard number
 			slog.Info("Creating progressive $text indexes for multi-collection setup",
@@ -379,9 +406,13 @@ func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 		return nil
 	} else {
 		// Benchmark mode: standard index on default collection
-		if searchType == "atlas_search" {
-			slog.Info("Creating Atlas Search index (standard fields)",
-				"search_type", "atlas_search")
+		if searchType == "atlas_search" || searchType == "spanner_search" {
+			indexType := "Atlas Search"
+			if searchType == "spanner_search" {
+				indexType = "Spanner SEARCH"
+			}
+			slog.Info(fmt.Sprintf("Creating %s index (standard fields)", indexType),
+				"search_type", searchType)
 			return br.database.CreateSearchIndex(ctx)
 		} else {
 			slog.Info("Creating standard $text index (title, content, search_terms)",
@@ -905,6 +936,68 @@ func (br *BenchmarkRunner) Close() error {
 	}
 
 	return nil
+}
+
+// createSpannerTables creates tables for Spanner database
+func (br *BenchmarkRunner) createSpannerTables(ctx context.Context) error {
+	if br.spannerClient == nil {
+		return fmt.Errorf("Spanner client not available")
+	}
+
+	if br.config.Workload.Mode == "cost_model" {
+		// Create tables for each shard
+		slog.Info("Creating Spanner tables for shards", "text_shards", br.config.Workload.TextShards)
+		for _, shardNum := range br.config.Workload.TextShards {
+			tableName := br.getCollectionNameForShard(shardNum)
+			slog.Info("Creating Spanner table", "table", tableName, "shard", shardNum)
+			if err := br.spannerClient.CreateTable(ctx, tableName); err != nil {
+				// Check if table already exists
+				if !isTableAlreadyExistsError(err) {
+					return fmt.Errorf("failed to create table %s: %w", tableName, err)
+				}
+				slog.Info("Table already exists", "table", tableName)
+			}
+		}
+		slog.Info("Spanner tables created successfully", "count", len(br.config.Workload.TextShards))
+	} else {
+		// Create default table for benchmark mode
+		tableName := br.config.Database.Collection
+		slog.Info("Creating Spanner table", "table", tableName)
+		if err := br.spannerClient.CreateTable(ctx, tableName); err != nil {
+			if !isTableAlreadyExistsError(err) {
+				return fmt.Errorf("failed to create table %s: %w", tableName, err)
+			}
+			slog.Info("Table already exists", "table", tableName)
+		}
+	}
+
+	return nil
+}
+
+// isTableAlreadyExistsError checks if an error indicates a table already exists
+func isTableAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := err.Error()
+	return contains(errMsg, "already exists") || contains(errMsg, "Duplicate name")
+}
+
+// contains checks if a string contains a substring (case-insensitive helper)
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
+		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
+			stringContains(s, substr)))
+}
+
+// stringContains is a simple substring check
+func stringContains(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
 }
 
 // getIndexFieldsDescription returns a human-readable description of indexed fields for a given shard

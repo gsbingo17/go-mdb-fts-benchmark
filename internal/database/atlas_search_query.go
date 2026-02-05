@@ -15,7 +15,8 @@ type ParsedQuery struct {
 }
 
 // ParseSearchQuery parses a raw query string into structured components
-// Handles formats like: abc##12 def##34 -xyz##99 "phrase one" -"phrase two"
+// Handles formats like: itv09du abc12xy -def00ab "phrase one" -"phrase two"
+// Tokens are 7-character alphanumeric strings (3 letters + 2 digits + 2 letters)
 func ParseSearchQuery(query string) ParsedQuery {
 	var parsed ParsedQuery
 

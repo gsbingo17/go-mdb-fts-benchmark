@@ -330,6 +330,94 @@ func (dct *DocumentDBRealTimeCostTracker) getLocationFromRegion() string {
 	return "US East (N. Virginia)" // Default
 }
 
+// GCPRealTimeCostTracker implements cost tracking for Google Cloud Platform (Spanner)
+type GCPRealTimeCostTracker struct {
+	configHourlyCost    float64
+	configStorageCostGB float64
+}
+
+// NewGCPRealTimeCostTracker creates a new GCP cost tracker
+func NewGCPRealTimeCostTracker(cfg mongoConfig.GCPCostConfig) *GCPRealTimeCostTracker {
+	return &GCPRealTimeCostTracker{
+		configHourlyCost:    cfg.HourlyCost,
+		configStorageCostGB: cfg.StorageCostPerGB,
+	}
+}
+
+// GetCurrentHourlyCost retrieves current hourly cost for GCP Spanner
+func (gct *GCPRealTimeCostTracker) GetCurrentHourlyCost(ctx context.Context) (float64, error) {
+	// Use configured hourly cost (represents node/processing units cost)
+	return gct.configHourlyCost, nil
+}
+
+// GetStorageCost retrieves storage cost for GCP Spanner
+func (gct *GCPRealTimeCostTracker) GetStorageCost(ctx context.Context) (float64, error) {
+	// Use configured storage cost rate
+	if gct.configStorageCostGB == 0 {
+		return 0.0, nil // No storage cost when configured as 0
+	}
+
+	// For Spanner, storage usage would typically be queried from Cloud Monitoring
+	// For now, estimate based on configured rate
+	// Spanner storage pricing is typically $0.30/GB/month for regional, $0.50/GB/month for multi-region
+	estimatedStorageGB := 10.0                                   // Estimated storage usage
+	storageRate := gct.configStorageCostGB                       // Use config value
+	hourlyCost := (estimatedStorageGB * storageRate) / (24 * 30) // Convert monthly to hourly
+
+	return hourlyCost, nil
+}
+
+// GetNetworkCost retrieves network cost for GCP Spanner
+func (gct *GCPRealTimeCostTracker) GetNetworkCost(ctx context.Context) (float64, error) {
+	// GCP network egress costs are typically minimal for same-region access
+	// For benchmark purposes, return 0
+	return 0.0, nil
+}
+
+// GetTotalCostSinceStart calculates total GCP cost since benchmark start
+func (gct *GCPRealTimeCostTracker) GetTotalCostSinceStart(ctx context.Context, startTime time.Time) (float64, error) {
+	duration := time.Since(startTime).Hours()
+
+	hourlyCost, err := gct.GetCurrentHourlyCost(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	storageCost, err := gct.GetStorageCost(ctx)
+	if err != nil {
+		storageCost = 0 // Continue without storage cost if unavailable
+	}
+
+	totalCost := (hourlyCost + storageCost) * duration
+	return totalCost, nil
+}
+
+// GetCostProjection provides GCP cost forecasting
+func (gct *GCPRealTimeCostTracker) GetCostProjection(ctx context.Context, metrics Metrics) (CostProjection, error) {
+	hourlyCost, err := gct.GetCurrentHourlyCost(ctx)
+	if err != nil {
+		return CostProjection{}, err
+	}
+
+	storageCost, _ := gct.GetStorageCost(ctx)
+	totalHourlyRate := hourlyCost + storageCost
+
+	var costPerOp float64
+	if metrics.TotalOps > 0 {
+		costPerOp = (totalHourlyRate * metrics.Duration.Hours()) / float64(metrics.TotalOps)
+	}
+
+	return CostProjection{
+		HourlyRate:        totalHourlyRate,
+		DailyProjection:   totalHourlyRate * 24,
+		WeeklyProjection:  totalHourlyRate * 24 * 7,
+		MonthlyProjection: totalHourlyRate * 24 * 30,
+		CostPerOperation:  costPerOp,
+		BreakdownBy:       "compute_storage",
+		LastUpdated:       time.Now(),
+	}, nil
+}
+
 // CreateRealTimeCostTracker creates the appropriate cost tracker
 func CreateRealTimeCostTracker(cfg mongoConfig.Config) (RealTimeCostTracker, error) {
 	switch cfg.Cost.Provider {
@@ -337,6 +425,8 @@ func CreateRealTimeCostTracker(cfg mongoConfig.Config) (RealTimeCostTracker, err
 		return NewAtlasRealTimeCostTracker(cfg.Cost.Atlas), nil
 	case "documentdb":
 		return NewDocumentDBRealTimeCostTracker(cfg.Cost.DocumentDB)
+	case "gcp":
+		return NewGCPRealTimeCostTracker(cfg.Cost.GCP), nil
 	default:
 		return nil, fmt.Errorf("unsupported cost provider: %s", cfg.Cost.Provider)
 	}
