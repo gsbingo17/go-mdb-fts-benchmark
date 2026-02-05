@@ -535,11 +535,10 @@ func (s *SpannerClient) InsertDocumentsInCollection(ctx context.Context, tableNa
 		return nil
 	}
 
-	// Optimized chunk size for better throughput while staying under 100MB limit
-	// With TOKENLIST columns and typical token-based documents (~200-300KB each),
-	// use 250 docs per chunk to maintain safe margin below 100MB limit
-	// 250 docs × 300KB = 75MB (25MB safety margin)
-	chunkSize := 250
+	// Conservative chunk size to stay under 100MB transaction limit
+	// Token-based documents with TOKENLIST overhead are ~460-765KB each
+	// 100 docs × 500KB average = 50MB (safe 50MB margin below 100MB limit)
+	chunkSize := 100
 
 	// Use parallel workers for concurrent chunk processing
 	maxWorkers := 10
