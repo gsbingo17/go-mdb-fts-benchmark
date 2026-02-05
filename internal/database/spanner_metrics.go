@@ -54,16 +54,17 @@ func (c *SpannerMetricsCollector) Close() error {
 // GetCPUUtilization fetches high priority CPU utilization from Cloud Monitoring
 func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float64, error) {
 	now := time.Now()
-	startTime := now.Add(-5 * time.Minute) // Look back 5 minutes
+	startTime := now.Add(-1 * time.Minute) // Look back 1 minute for fresher data
 	endTime := now
 
 	// Build the metric filter for high priority CPU
 	// Metric: spanner.googleapis.com/instance/cpu/utilization_by_priority
 	// Filter by: priority="high", instance, database
+	// IMPORTANT: 'database' is a METRIC label, not a resource label
 	filter := fmt.Sprintf(`
 		metric.type = "spanner.googleapis.com/instance/cpu/utilization_by_priority"
 		AND resource.labels.instance_id = "%s"
-		AND resource.labels.database = "%s"
+		AND metric.labels.database = "%s"
 		AND metric.labels.priority = "high"
 	`, c.instanceID, c.databaseID)
 
@@ -118,8 +119,21 @@ func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float6
 		return 0, fmt.Errorf("no CPU utilization data available")
 	}
 
+	// Check metric staleness
+	staleness := time.Since(latestTime)
+	if staleness > 90*time.Second {
+		fmt.Printf("WARN: CPU metric is stale (%.1f seconds old, from %s)\n",
+			staleness.Seconds(), latestTime.Format(time.RFC3339))
+	} else {
+		fmt.Printf("DEBUG: CPU metric age: %.1f seconds (timestamp: %s)\n",
+			staleness.Seconds(), latestTime.Format(time.RFC3339))
+	}
+
 	// Convert from ratio to percentage (0.0-1.0 to 0-100)
-	return latestValue * 100.0, nil
+	cpuPercent := latestValue * 100.0
+	fmt.Printf("INFO: Spanner high-priority CPU: %.2f%% (raw value: %.4f)\n", cpuPercent, latestValue)
+
+	return cpuPercent, nil
 }
 
 // GetMetrics fetches comprehensive metrics from Cloud Monitoring
