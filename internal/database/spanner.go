@@ -527,48 +527,145 @@ func (s *SpannerClient) InsertDocuments(ctx context.Context, docs []Document) er
 	return s.InsertDocumentsInCollection(ctx, s.defaultTable, docs)
 }
 
-// InsertDocumentsInCollection inserts multiple documents into a specific table using chunked batch inserts
+// InsertDocumentsInCollection inserts multiple documents into a specific table using parallel chunked batch inserts
 // Spanner has a 100MB transaction limit, so we split large batches into smaller chunks
+// Uses parallel processing with worker pool for optimal throughput
 func (s *SpannerClient) InsertDocumentsInCollection(ctx context.Context, tableName string, docs []Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
 
-	// Split into smaller chunks to avoid transaction size limits
-	// Spanner limit: 100MB per transaction
-	// With token-based documents containing TOKENLIST columns, use conservative chunk size
-	chunkSize := 50
+	// Optimized chunk size for better throughput while staying under 100MB limit
+	// With TOKENLIST columns and typical token-based documents (~200-300KB each),
+	// use 250 docs per chunk to maintain safe margin below 100MB limit
+	// 250 docs × 300KB = 75MB (25MB safety margin)
+	chunkSize := 250
 
+	// Use parallel workers for concurrent chunk processing
+	maxWorkers := 10
+	workerCount := maxWorkers
+	if len(docs) < chunkSize*maxWorkers {
+		// Reduce workers for small datasets
+		workerCount = (len(docs) / chunkSize) + 1
+		if workerCount > maxWorkers {
+			workerCount = maxWorkers
+		}
+		if workerCount < 1 {
+			workerCount = 1
+		}
+	}
+
+	// Split documents into chunks
+	var chunks [][]Document
 	for i := 0; i < len(docs); i += chunkSize {
 		end := i + chunkSize
 		if end > len(docs) {
 			end = len(docs)
 		}
+		chunks = append(chunks, docs[i:end])
+	}
 
-		chunk := docs[i:end]
-		mutations := make([]*spanner.Mutation, 0, len(chunk))
+	slog.Info("Starting parallel batch insert",
+		"table", tableName,
+		"total_docs", len(docs),
+		"chunk_size", chunkSize,
+		"chunks", len(chunks),
+		"workers", workerCount)
 
-		for _, doc := range chunk {
-			// Generate ID if not provided
-			id := doc.ID
-			if id == "" {
-				id = fmt.Sprintf("%d", time.Now().UnixNano())
+	// Create error channel and worker pool
+	type chunkJob struct {
+		index int
+		docs  []Document
+	}
+
+	jobs := make(chan chunkJob, len(chunks))
+	errors := make(chan error, len(chunks))
+
+	// Track progress
+	startTime := time.Now()
+	var processedDocs int64
+	var processedChunks int64
+
+	// Start workers
+	for w := 0; w < workerCount; w++ {
+		go func(workerID int) {
+			for job := range jobs {
+				mutations := make([]*spanner.Mutation, 0, len(job.docs))
+
+				for _, doc := range job.docs {
+					// Generate ID if not provided
+					id := doc.ID
+					if id == "" {
+						id = fmt.Sprintf("%d", time.Now().UnixNano())
+					}
+
+					m := spanner.Insert(
+						tableName,
+						[]string{"id", "text1", "text2", "text3", "created_at"},
+						[]interface{}{id, doc.Text1, doc.Text2, doc.Text3, doc.CreatedAt},
+					)
+					mutations = append(mutations, m)
+				}
+
+				// Apply chunk in a single transaction
+				_, err := s.client.Apply(ctx, mutations)
+				if err != nil {
+					errors <- fmt.Errorf("worker %d failed chunk %d: %w", workerID, job.index, err)
+					return
+				}
+
+				// Track progress
+				chunkNum := processedChunks + 1
+				processedChunks++
+				docsInChunk := int64(len(job.docs))
+				processedDocs += docsInChunk
+
+				// Log progress every 10 chunks or on last chunk
+				if chunkNum%10 == 0 || chunkNum == int64(len(chunks)) {
+					elapsed := time.Since(startTime)
+					docsPerSec := float64(processedDocs) / elapsed.Seconds()
+					slog.Info("Batch insert progress",
+						"table", tableName,
+						"chunks_done", chunkNum,
+						"total_chunks", len(chunks),
+						"docs_inserted", processedDocs,
+						"total_docs", len(docs),
+						"docs_per_sec", fmt.Sprintf("%.0f", docsPerSec),
+						"elapsed", elapsed.Round(time.Second))
+				}
+
+				errors <- nil
 			}
+		}(w)
+	}
 
-			m := spanner.Insert(
-				tableName,
-				[]string{"id", "text1", "text2", "text3", "created_at"},
-				[]interface{}{id, doc.Text1, doc.Text2, doc.Text3, doc.CreatedAt},
-			)
-			mutations = append(mutations, m)
-		}
+	// Send jobs to workers
+	for i, chunk := range chunks {
+		jobs <- chunkJob{index: i, docs: chunk}
+	}
+	close(jobs)
 
-		// Apply chunk in a single transaction
-		_, err := s.client.Apply(ctx, mutations)
-		if err != nil {
-			return fmt.Errorf("failed to insert chunk [%d:%d] into %s: %w", i, end, tableName, err)
+	// Collect results
+	var firstError error
+	for i := 0; i < len(chunks); i++ {
+		if err := <-errors; err != nil && firstError == nil {
+			firstError = err
 		}
 	}
+
+	if firstError != nil {
+		return firstError
+	}
+
+	elapsed := time.Since(startTime)
+	docsPerSec := float64(len(docs)) / elapsed.Seconds()
+	slog.Info("Batch insert completed",
+		"table", tableName,
+		"total_docs", len(docs),
+		"chunks", len(chunks),
+		"workers", workerCount,
+		"total_time", elapsed.Round(time.Second),
+		"docs_per_sec", fmt.Sprintf("%.0f", docsPerSec))
 
 	return nil
 }
