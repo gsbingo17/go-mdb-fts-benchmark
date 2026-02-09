@@ -214,6 +214,8 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 		geoSeed = time.Now().UnixNano()
 	}
 	geoGen := generator.NewGeoGenerator(geoSeed)
+	// Create separate DataGenerator with geo_seed for reproducible ID generation
+	geoDataGen := generator.NewDataGenerator(geoSeed)
 	slog.Info("Geospatial data generator initialized", "seed", geoSeed, "reproducible", br.config.Workload.GeoSeed != 0)
 
 	batchSize := 1000
@@ -257,10 +259,18 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 				// All geospatial documents go to the base collection
 				var geoDocs []database.Document
 				for j := 0; j < remaining; j++ {
-					geoData := geoGen.GenerateGeoDocument(fmt.Sprintf("doc-%d-%d", i, j))
+					// Generate deterministic ID using token-based pattern (same as Atlas/text search)
+					threadID := (i + j) % br.config.Workload.WorkerCount
+					idBytes := generator.NextPreloadIdBytes(geoDataGen.GetRng(), generator.KeySize, br.config.Workload.WorkerCount, threadID)
+					id := generator.PreloadIdBytesToId(idBytes)
+
+					// Generate geospatial document with token-based ID
+					geoData := geoGen.GenerateGeoDocument(id)
+					geoDoc := geoData.(bson.M)
+					// Extract fields and populate Document struct to preserve _id
 					geoDocs = append(geoDocs, database.Document{
-						Location:  geoData.(bson.M)["location"],
-						CreatedAt: time.Now(),
+						ID:       geoDoc["_id"].(string),
+						Location: geoDoc["location"],
 					})
 				}
 
@@ -306,10 +316,18 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 				// Generate geospatial documents with "location" field
 				docs = make([]database.Document, remaining)
 				for j := 0; j < remaining; j++ {
-					geoData := geoGen.GenerateGeoDocument(fmt.Sprintf("doc-%d-%d", i, j))
+					// Generate deterministic ID using token-based pattern (same as Atlas/text search)
+					threadID := (i + j) % br.config.Workload.WorkerCount
+					idBytes := generator.NextPreloadIdBytes(geoDataGen.GetRng(), generator.KeySize, br.config.Workload.WorkerCount, threadID)
+					id := generator.PreloadIdBytesToId(idBytes)
+
+					// Generate geospatial document with token-based ID
+					geoData := geoGen.GenerateGeoDocument(id)
+					geoDoc := geoData.(bson.M)
+					// Extract fields and populate Document struct to preserve _id
 					docs[j] = database.Document{
-						Location:  geoData.(bson.M)["location"],
-						CreatedAt: time.Now(),
+						ID:       geoDoc["_id"].(string),
+						Location: geoDoc["location"],
 					}
 				}
 			} else {

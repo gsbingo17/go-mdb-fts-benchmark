@@ -22,7 +22,7 @@ type Document struct {
 	// Geospatial field (for geospatial_search mode)
 	Location interface{} `bson:"location,omitempty"` // GeoJSON Point
 
-	CreatedAt time.Time `bson:"created_at"`
+	CreatedAt time.Time `bson:"created_at,omitempty"`
 }
 
 // DatabaseMetrics represents database performance metrics

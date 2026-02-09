@@ -31,6 +31,12 @@ func NewDataGenerator(seed int64) *DataGenerator {
 	}
 }
 
+// GetRng returns the internal random number generator for external use
+// This is used for token-based ID generation in geospatial benchmarks
+func (dg *DataGenerator) GetRng() *rand.Rand {
+	return dg.rng
+}
+
 // GenerateDocument creates a single synthetic document with searchable content
 func (dg *DataGenerator) GenerateDocument() database.Document {
 	return database.Document{

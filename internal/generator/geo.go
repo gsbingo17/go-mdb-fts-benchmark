@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
-	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 )
@@ -109,9 +108,8 @@ func (g *GeoGenerator) GenerateGeoDocument(id string) interface{} {
 	location := MakePointOnCircle(city, bearing, distanceMeters)
 
 	return bson.M{
-		"_id":       id,
-		"location":  location.ToGeoJSON(),
-		"timestamp": time.Now(),
+		"_id":      id,
+		"location": location.ToGeoJSON(),
 	}
 }
 
