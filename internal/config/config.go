@@ -188,27 +188,50 @@ func validate(config *Config) error {
 
 	// Cost model mode specific validation
 	if config.Workload.Mode == "cost_model" {
-		if len(config.Workload.TextShards) == 0 {
-			return fmt.Errorf("workload.text_shards array cannot be empty in cost_model mode")
+		searchType := config.Workload.SearchType
+		if searchType == "" {
+			searchType = "text" // Default
 		}
-		if len(config.Workload.QueryResultLimits) == 0 {
-			return fmt.Errorf("workload.query_result_limits array cannot be empty in cost_model mode")
-		}
-		// Validate textShards values are positive
-		for i, shard := range config.Workload.TextShards {
-			if shard <= 0 {
-				return fmt.Errorf("workload.text_shards[%d] must be positive, got %d", i, shard)
+
+		// Geospatial search has different requirements than text/atlas search
+		if searchType == "geospatial_search" {
+			// Validate geospatial-specific configuration
+			if len(config.Workload.GeoQueryLimits) == 0 {
+				return fmt.Errorf("workload.geo_query_limits array cannot be empty for geospatial search in cost_model mode")
 			}
-		}
-		// Validate queryResultLimits values are positive
-		for i, limit := range config.Workload.QueryResultLimits {
-			if limit <= 0 {
-				return fmt.Errorf("workload.query_result_limits[%d] must be positive, got %d", i, limit)
+			if len(config.Workload.GeoDistanceVariants) == 0 {
+				return fmt.Errorf("workload.geo_distance_variants array cannot be empty for geospatial search in cost_model mode")
 			}
-		}
-		// Validate query parameters exist
-		if len(config.Workload.QueryParameters) == 0 && !config.Workload.UseRandomQueries {
-			return fmt.Errorf("workload.query_parameters array cannot be empty when use_random_queries is false in cost_model mode")
+			// Validate geo_query_limits values are positive
+			for i, limit := range config.Workload.GeoQueryLimits {
+				if limit <= 0 {
+					return fmt.Errorf("workload.geo_query_limits[%d] must be positive, got %d", i, limit)
+				}
+			}
+		} else {
+			// Text/Atlas search requires text_shards and query configuration
+			if len(config.Workload.TextShards) == 0 {
+				return fmt.Errorf("workload.text_shards array cannot be empty for %s search in cost_model mode", searchType)
+			}
+			if len(config.Workload.QueryResultLimits) == 0 {
+				return fmt.Errorf("workload.query_result_limits array cannot be empty for %s search in cost_model mode", searchType)
+			}
+			// Validate textShards values are positive
+			for i, shard := range config.Workload.TextShards {
+				if shard <= 0 {
+					return fmt.Errorf("workload.text_shards[%d] must be positive, got %d", i, shard)
+				}
+			}
+			// Validate queryResultLimits values are positive
+			for i, limit := range config.Workload.QueryResultLimits {
+				if limit <= 0 {
+					return fmt.Errorf("workload.query_result_limits[%d] must be positive, got %d", i, limit)
+				}
+			}
+			// Validate query parameters exist
+			if len(config.Workload.QueryParameters) == 0 && !config.Workload.UseRandomQueries {
+				return fmt.Errorf("workload.query_parameters array cannot be empty when use_random_queries is false in cost_model mode")
+			}
 		}
 	}
 

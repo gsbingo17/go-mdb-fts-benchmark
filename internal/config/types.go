@@ -46,7 +46,7 @@ type WorkloadConfig struct {
 
 	// Token-based FTS configuration (for cost_model mode)
 	Mode                 string            `yaml:"mode"`        // "benchmark" or "cost_model"
-	SearchType           string            `yaml:"search_type"` // "text" or "atlas_search"
+	SearchType           string            `yaml:"search_type"` // "text", "atlas_search", or "geospatial_search"
 	TextShards           []int             `yaml:"text_shards"` // Array of shard values to randomly select from
 	QueryParameters      []QueryParameters `yaml:"query_parameters"`
 	QueryResultLimits    []int             `yaml:"query_result_limits"` // Array of limit values to randomly select from
@@ -54,6 +54,18 @@ type WorkloadConfig struct {
 	RandomTestRuns       int               `yaml:"random_test_runs"`
 	RandomQuerySeed      string            `yaml:"random_query_seed"` // Fixed seed for reproducible random queries (e.g., "quossa")
 	RandomQueryMaxParams QueryParameters   `yaml:"random_query_max_parameters"`
+
+	// Geospatial search configuration
+	GeoQueryLimits      []int                `yaml:"geo_query_limits"`      // Array of limit values for geospatial queries
+	GeoDistanceVariants []GeoDistanceVariant `yaml:"geo_distance_variants"` // Different distance filter combinations
+	GeoSeed             int64                `yaml:"geo_seed"`              // Seed for geospatial data/query generation (0 = use timestamp for random)
+}
+
+// GeoDistanceVariant defines a geospatial query distance filter configuration
+type GeoDistanceVariant struct {
+	Type        string `yaml:"type"`         // "none", "min", "max", or "both"
+	MinDistance bool   `yaml:"min_distance"` // Whether to include min distance filter
+	MaxDistance bool   `yaml:"max_distance"` // Whether to include max distance filter
 }
 
 // QueryParameters defines the shape of a text search query

@@ -11,6 +11,8 @@ import (
 	"mongodb-benchmarking-tool/internal/generator"
 	"mongodb-benchmarking-tool/internal/metrics"
 	"mongodb-benchmarking-tool/internal/worker"
+
+	"go.mongodb.org/mongo-driver/v2/bson"
 )
 
 // BenchmarkRunner orchestrates the complete benchmarking process
@@ -205,10 +207,23 @@ func (br *BenchmarkRunner) connectDatabase(ctx context.Context) error {
 // seedData generates and inserts test data
 func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 	dataGen := generator.NewDataGenerator(time.Now().UnixNano())
+
+	// Use configured seed for geospatial data generation, or timestamp if seed is 0
+	geoSeed := br.config.Workload.GeoSeed
+	if geoSeed == 0 {
+		geoSeed = time.Now().UnixNano()
+	}
+	geoGen := generator.NewGeoGenerator(geoSeed)
+	slog.Info("Geospatial data generator initialized", "seed", geoSeed, "reproducible", br.config.Workload.GeoSeed != 0)
+
 	batchSize := 1000
 
 	// Check if we're in cost_model mode
 	isCostModelMode := br.config.Workload.Mode == "cost_model"
+	searchType := br.config.Workload.SearchType
+	if searchType == "" {
+		searchType = "text" // Default to text search
+	}
 
 	// Get max textShard value for data generation
 	maxTextShard := 0
@@ -218,13 +233,16 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 				maxTextShard = shard
 			}
 		}
-		slog.Info("Using token-based document generation with multi-collection distribution (cost_model mode)",
+		slog.Info("Document generation mode",
+			"search_type", searchType,
 			"text_shards", br.config.Workload.TextShards,
 			"max_text_shard", maxTextShard,
 			"worker_count", br.config.Workload.WorkerCount,
 			"collections", br.getAllShardCollections())
 	} else {
-		slog.Info("Using standard document generation (benchmark mode)")
+		slog.Info("Document generation mode",
+			"search_type", searchType,
+			"mode", "benchmark")
 	}
 
 	for i := 0; i < count; i += batchSize {
@@ -234,36 +252,71 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 		}
 
 		if isCostModelMode {
-			// Generate and distribute token-based documents across shard collections
-			// Distribute documents evenly across shards using the array values
-			docsPerShard := make(map[int][]database.Document)
+			if searchType == "geospatial_search" {
+				// CRITICAL: Geospatial uses SINGLE base collection, NOT sharded collections
+				// All geospatial documents go to the base collection
+				var geoDocs []database.Document
+				for j := 0; j < remaining; j++ {
+					geoData := geoGen.GenerateGeoDocument(fmt.Sprintf("doc-%d-%d", i, j))
+					geoDocs = append(geoDocs, database.Document{
+						Location:  geoData.(bson.M)["location"],
+						CreatedAt: time.Now(),
+					})
+				}
 
-			for j := 0; j < remaining; j++ {
-				threadID := (i + j) % br.config.Workload.WorkerCount
-				doc := dataGen.GenerateTokenDocument(
-					maxTextShard,
-					br.config.Workload.WorkerCount,
-					threadID,
-				)
+				// Insert all geospatial documents to base collection
+				baseCollection := br.config.Database.Collection
+				if err := br.database.InsertDocumentsInCollection(ctx, baseCollection, geoDocs); err != nil {
+					return fmt.Errorf("batch insert failed for geospatial collection %s: %w", baseCollection, err)
+				}
+			} else {
+				// Text/Atlas search: distribute documents across shard collections
+				docsPerShard := make(map[int][]database.Document)
 
-				// Distribute documents round-robin across the textShards array values
-				shardIndex := (i + j) % len(br.config.Workload.TextShards)
-				shard := br.config.Workload.TextShards[shardIndex]
-				docsPerShard[shard] = append(docsPerShard[shard], doc)
-			}
+				for j := 0; j < remaining; j++ {
+					threadID := (i + j) % br.config.Workload.WorkerCount
 
-			// Insert documents into their respective shard collections
-			for shard, docs := range docsPerShard {
-				if len(docs) > 0 {
-					collectionName := br.getCollectionNameForShard(shard)
-					if err := br.database.InsertDocumentsInCollection(ctx, collectionName, docs); err != nil {
-						return fmt.Errorf("batch insert failed for collection %s: %w", collectionName, err)
+					// Generate token-based document for text/atlas search
+					doc := dataGen.GenerateTokenDocument(
+						maxTextShard,
+						br.config.Workload.WorkerCount,
+						threadID,
+					)
+
+					// Distribute documents round-robin across the textShards array values
+					shardIndex := (i + j) % len(br.config.Workload.TextShards)
+					shard := br.config.Workload.TextShards[shardIndex]
+					docsPerShard[shard] = append(docsPerShard[shard], doc)
+				}
+
+				// Insert documents into their respective shard collections
+				for shard, docs := range docsPerShard {
+					if len(docs) > 0 {
+						collectionName := br.getCollectionNameForShard(shard)
+						if err := br.database.InsertDocumentsInCollection(ctx, collectionName, docs); err != nil {
+							return fmt.Errorf("batch insert failed for collection %s: %w", collectionName, err)
+						}
 					}
 				}
 			}
 		} else {
 			// Generate standard documents for benchmarking
-			docs := dataGen.GenerateDocuments(remaining)
+			var docs []database.Document
+			if searchType == "geospatial_search" {
+				// Generate geospatial documents with "location" field
+				docs = make([]database.Document, remaining)
+				for j := 0; j < remaining; j++ {
+					geoData := geoGen.GenerateGeoDocument(fmt.Sprintf("doc-%d-%d", i, j))
+					docs[j] = database.Document{
+						Location:  geoData.(bson.M)["location"],
+						CreatedAt: time.Now(),
+					}
+				}
+			} else {
+				// Generate standard text search documents
+				docs = dataGen.GenerateDocuments(remaining)
+			}
+
 			if err := br.database.InsertDocuments(ctx, docs); err != nil {
 				return fmt.Errorf("batch insert failed: %w", err)
 			}
@@ -355,7 +408,25 @@ func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 		// Get all shard collection names
 		collections := br.getAllShardCollections()
 
-		if searchType == "atlas_search" || searchType == "spanner_search" {
+		if searchType == "geospatial_search" {
+			// CRITICAL FIX: Geospatial uses SINGLE base collection for data
+			// Create index ONLY on base collection where data is actually stored
+			// NOT on shard collections (text_shards is ignored for geospatial)
+			baseCollection := br.config.Database.Collection
+			slog.Info("Creating 2dsphere geospatial index on base collection",
+				"search_type", searchType,
+				"collection", baseCollection,
+				"index_field", "location",
+				"note", "text_shards ignored for geospatial - single collection architecture")
+
+			if err := br.database.CreateGeoIndexForCollection(ctx, baseCollection, "location"); err != nil {
+				return fmt.Errorf("failed to create geospatial index for base collection %s: %w", baseCollection, err)
+			}
+
+			slog.Info("Successfully created 2dsphere geospatial index on base collection",
+				"collection", baseCollection,
+				"index_type", "2dsphere")
+		} else if searchType == "atlas_search" || searchType == "spanner_search" {
 			// Atlas Search / Spanner SEARCH: uniform index across all shards (all fields indexed)
 			indexType := "Atlas Search"
 			if searchType == "spanner_search" {
@@ -406,7 +477,11 @@ func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 		return nil
 	} else {
 		// Benchmark mode: standard index on default collection
-		if searchType == "atlas_search" || searchType == "spanner_search" {
+		if searchType == "geospatial_search" {
+			slog.Info("Creating 2dsphere geospatial index on location field",
+				"search_type", searchType)
+			return br.database.CreateGeoIndex(ctx, "location")
+		} else if searchType == "atlas_search" || searchType == "spanner_search" {
 			indexType := "Atlas Search"
 			if searchType == "spanner_search" {
 				indexType = "Spanner SEARCH"

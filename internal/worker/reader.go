@@ -24,10 +24,12 @@ type ReadWorker struct {
 
 	// Cost model mode configuration
 	isCostModelMode bool
-	queryRequest    generator.QueryRequest // Single request object with all query generation parameters
+	queryRequest    generator.QueryRequest    // Single request object with all query generation parameters
+	geoQueryRequest generator.GeoQueryRequest // Geospatial query request parameters
+	geoGenerator    *generator.GeoGenerator   // Geospatial query generator
 
 	// Search type configuration
-	searchType string // "text" or "atlas_search"
+	searchType string // "text", "atlas_search", or "geospatial_search"
 }
 
 // OperationLog tracks individual operations for analysis
@@ -67,6 +69,13 @@ func NewReadWorker(
 func (rw *ReadWorker) SetCostModelMode(enabled bool, queryRequest generator.QueryRequest) {
 	rw.isCostModelMode = enabled
 	rw.queryRequest = queryRequest
+}
+
+// SetGeoCostModelMode configures the worker for cost_model mode with geospatial queries
+func (rw *ReadWorker) SetGeoCostModelMode(enabled bool, geoQueryRequest generator.GeoQueryRequest, geoGen *generator.GeoGenerator) {
+	rw.isCostModelMode = enabled
+	rw.geoQueryRequest = geoQueryRequest
+	rw.geoGenerator = geoGen
 }
 
 // SetSearchType configures the search type ("text" or "atlas_search")
@@ -111,36 +120,55 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 	var limit int
 
 	if rw.isCostModelMode {
-		// Use QueryRequest/QueryResult pattern for clean multi-dimensional query generation
-		queryResult := rw.workloadGen.GenerateTokenQueryRequest(rw.queryRequest)
+		// Handle geospatial search separately
+		if rw.searchType == "geospatial_search" && rw.geoGenerator != nil {
+			// Use GeoQueryRequest/GeoQueryResult pattern for geospatial queries
+			geoResult := rw.workloadGen.GenerateGeoQueryRequest(rw.geoQueryRequest, rw.geoGenerator)
 
-		// Route to appropriate search method based on search_type
-		if rw.searchType == "atlas_search" {
-			resultCount, err = rw.database.ExecuteAtlasSearchInCollection(
+			resultCount, err = rw.database.ExecuteGeoSearchInCollection(
 				ctx,
-				queryResult.CollectionName,
-				queryResult.Query,
-				queryResult.Limit,
+				geoResult.CollectionName,
+				geoResult.RawQuery,
+				geoResult.Limit,
 			)
+			query = geoResult.Query
+			collectionName = geoResult.CollectionName
+			textShard = geoResult.SelectedTextShard
+			limit = geoResult.Limit
 		} else {
-			// Default to $text search
-			resultCount, err = rw.database.ExecuteTextSearchInCollection(
-				ctx,
-				queryResult.CollectionName,
-				queryResult.Query,
-				queryResult.Limit,
-			)
+			// Use QueryRequest/QueryResult pattern for text/atlas search
+			queryResult := rw.workloadGen.GenerateTokenQueryRequest(rw.queryRequest)
+
+			// Route to appropriate search method based on search_type
+			if rw.searchType == "atlas_search" {
+				resultCount, err = rw.database.ExecuteAtlasSearchInCollection(
+					ctx,
+					queryResult.CollectionName,
+					queryResult.Query,
+					queryResult.Limit,
+				)
+			} else {
+				// Default to $text search
+				resultCount, err = rw.database.ExecuteTextSearchInCollection(
+					ctx,
+					queryResult.CollectionName,
+					queryResult.Query,
+					queryResult.Limit,
+				)
+			}
+			query = queryResult.Query
+			collectionName = queryResult.CollectionName
+			textShard = queryResult.SelectedTextShard
+			limit = queryResult.Limit
 		}
-		query = queryResult.Query
-		collectionName = queryResult.CollectionName
-		textShard = queryResult.SelectedTextShard
-		limit = queryResult.Limit
 	} else {
 		query = rw.workloadGen.GenerateSearchQuery()
 
 		// Route to appropriate search method based on search_type
 		if rw.searchType == "atlas_search" {
 			resultCount, err = rw.database.ExecuteAtlasSearch(ctx, query, rw.queryLimit)
+		} else if rw.searchType == "geospatial_search" {
+			resultCount, err = rw.database.ExecuteGeoSearch(ctx, query, rw.queryLimit)
 		} else {
 			// Default to $text search
 			resultCount, err = rw.database.ExecuteTextSearch(ctx, query, rw.queryLimit)

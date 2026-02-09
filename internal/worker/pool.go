@@ -95,6 +95,24 @@ func (wp *WorkerPool) Start() error {
 	// Check if we're in cost_model mode
 	isCostModelMode := wp.config.Mode == "cost_model"
 
+	// Get search type (default to "text" if not specified)
+	searchType := wp.config.SearchType
+	if searchType == "" {
+		searchType = "text"
+	}
+
+	// Create geo generator if using geospatial search
+	var geoGen *generator.GeoGenerator
+	if searchType == "geospatial_search" {
+		// Use configured seed for geospatial query generation, or timestamp if seed is 0
+		geoSeed := wp.config.GeoSeed
+		if geoSeed == 0 {
+			geoSeed = time.Now().UnixNano()
+		}
+		geoGen = generator.NewGeoGenerator(geoSeed)
+		slog.Info("Geospatial query generator initialized", "seed", geoSeed, "reproducible", wp.config.GeoSeed != 0)
+	}
+
 	// Create read workers
 	for i := 0; i < readWorkerCount; i++ {
 		worker := NewReadWorker(
@@ -107,45 +125,61 @@ func (wp *WorkerPool) Start() error {
 		)
 
 		// Configure for cost_model mode if needed
-		if isCostModelMode && len(wp.config.QueryParameters) > 0 {
+		if isCostModelMode {
 			// Get base collection name from database
 			baseCollection := wp.database.GetConnectionInfo().Collection
 
-			// Pre-generate query shapes if using random queries (matches Java reference implementation)
-			var queryParams []config.QueryParameters
-			if wp.config.UseRandomQueries && wp.config.RandomTestRuns > 0 {
-				// Generate N random query shapes once at startup using fixed seed
-				seed := wp.config.RandomQuerySeed
-				if seed == "" {
-					seed = "quossa" // Default seed for reproducibility
+			if searchType == "geospatial_search" {
+				// Configure for geospatial search
+				// NOTE: Geospatial uses SINGLE collection (baseCollection), NOT sharded like text search
+				if len(wp.config.GeoQueryLimits) > 0 && len(wp.config.GeoDistanceVariants) > 0 {
+					geoQueryRequest := generator.GeoQueryRequest{
+						BaseCollectionName:  baseCollection,
+						TextShards:          wp.config.TextShards, // Passed for config compatibility but NOT used
+						GeoDistanceVariants: wp.config.GeoDistanceVariants,
+						Limits:              wp.config.GeoQueryLimits,
+					}
+					worker.SetGeoCostModelMode(true, geoQueryRequest, geoGen)
+					slog.Info("Configured read worker for geospatial cost model mode",
+						"worker_id", i,
+						"collection", baseCollection,
+						"limits", wp.config.GeoQueryLimits,
+						"variants", len(wp.config.GeoDistanceVariants))
 				}
-				slog.Info("Pre-generating random query shapes",
-					"count", wp.config.RandomTestRuns,
-					"seed", seed)
-				queryParams = generator.GenerateQueryShapes(seed, wp.config.RandomTestRuns, wp.config.RandomQueryMaxParams)
-			} else {
-				// Use fixed query shapes from configuration
-				queryParams = wp.config.QueryParameters
-			}
+			} else if len(wp.config.QueryParameters) > 0 {
+				// Configure for text/atlas search
+				// Pre-generate query shapes if using random queries (matches Java reference implementation)
+				var queryParams []config.QueryParameters
+				if wp.config.UseRandomQueries && wp.config.RandomTestRuns > 0 {
+					// Generate N random query shapes once at startup using fixed seed
+					seed := wp.config.RandomQuerySeed
+					if seed == "" {
+						seed = "quossa" // Default seed for reproducibility
+					}
+					slog.Info("Pre-generating random query shapes",
+						"count", wp.config.RandomTestRuns,
+						"seed", seed)
+					queryParams = generator.GenerateQueryShapes(seed, wp.config.RandomTestRuns, wp.config.RandomQueryMaxParams)
+				} else {
+					// Use fixed query shapes from configuration
+					queryParams = wp.config.QueryParameters
+				}
 
-			// Create QueryRequest with all multi-dimensional parameters
-			queryRequest := generator.QueryRequest{
-				BaseCollectionName: baseCollection,
-				TextShards:         wp.config.TextShards,
-				QueryParams:        queryParams, // Now contains either fixed or pre-generated shapes
-				Limits:             wp.config.QueryResultLimits,
-				UseRandomQueries:   false, // Never generate on-the-fly, always select from queryParams
-				RandomMaxParams:    wp.config.RandomQueryMaxParams,
-			}
+				// Create QueryRequest with all multi-dimensional parameters
+				queryRequest := generator.QueryRequest{
+					BaseCollectionName: baseCollection,
+					TextShards:         wp.config.TextShards,
+					QueryParams:        queryParams, // Now contains either fixed or pre-generated shapes
+					Limits:             wp.config.QueryResultLimits,
+					UseRandomQueries:   false, // Never generate on-the-fly, always select from queryParams
+					RandomMaxParams:    wp.config.RandomQueryMaxParams,
+				}
 
-			worker.SetCostModelMode(true, queryRequest)
+				worker.SetCostModelMode(true, queryRequest)
+			}
 		}
 
-		// Set search type (default to "text" if not specified)
-		searchType := wp.config.SearchType
-		if searchType == "" {
-			searchType = "text"
-		}
+		// Set search type
 		worker.SetSearchType(searchType)
 
 		wp.readers = append(wp.readers, worker)

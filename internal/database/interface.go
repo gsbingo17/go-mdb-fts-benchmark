@@ -19,6 +19,9 @@ type Document struct {
 	Text2 string `bson:"text2,omitempty"`
 	Text3 string `bson:"text3,omitempty"`
 
+	// Geospatial field (for geospatial_search mode)
+	Location interface{} `bson:"location,omitempty"` // GeoJSON Point
+
 	CreatedAt time.Time `bson:"created_at"`
 }
 
@@ -51,11 +54,17 @@ type Database interface {
 	DropSearchIndexes(ctx context.Context) error
 	DropSearchIndexesForCollection(ctx context.Context, collectionName string) error
 
+	// Geospatial index management
+	CreateGeoIndex(ctx context.Context, fieldName string) error
+	CreateGeoIndexForCollection(ctx context.Context, collectionName string, fieldName string) error
+
 	// Data operations
 	ExecuteTextSearch(ctx context.Context, query string, limit int) (int, error)
 	ExecuteTextSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
 	ExecuteAtlasSearch(ctx context.Context, query string, limit int) (int, error)
 	ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
+	ExecuteGeoSearch(ctx context.Context, query interface{}, limit int) (int, error)
+	ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error)
 	InsertDocument(ctx context.Context, doc Document) error
 	InsertDocumentInCollection(ctx context.Context, collectionName string, doc Document) error
 	InsertDocuments(ctx context.Context, docs []Document) error

@@ -132,6 +132,35 @@ func (m *MongoDBClient) CreateTokenTextIndex(ctx context.Context) error {
 	return nil
 }
 
+// CreateGeoIndex creates a 2dsphere index on the specified field for the default collection
+func (m *MongoDBClient) CreateGeoIndex(ctx context.Context, fieldName string) error {
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: fieldName, Value: "2dsphere"}},
+	}
+
+	_, err := m.collection.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create 2dsphere index on field '%s': %w", fieldName, err)
+	}
+	slog.Info("Created 2dsphere geo index", "field", fieldName)
+	return nil
+}
+
+// CreateGeoIndexForCollection creates a 2dsphere index on the specified field for a specific collection
+func (m *MongoDBClient) CreateGeoIndexForCollection(ctx context.Context, collectionName string, fieldName string) error {
+	coll := m.database.Collection(collectionName)
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: fieldName, Value: "2dsphere"}},
+	}
+
+	_, err := coll.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create 2dsphere index on '%s.%s': %w", collectionName, fieldName, err)
+	}
+	slog.Info("Created 2dsphere geo index", "collection", collectionName, "field", fieldName)
+	return nil
+}
+
 // CreateTextIndexForCollection creates a progressive text search index based on shard number
 // Shard 1: index on text1 only
 // Shard 2: index on text1, text2
@@ -225,6 +254,54 @@ func (m *MongoDBClient) ExecuteTextSearch(ctx context.Context, query string, lim
 	if err := cursor.Err(); err != nil {
 		return 0, fmt.Errorf("cursor error: %w", err)
 	}
+
+	return count, nil
+}
+
+// ExecuteGeoSearch performs geospatial search on the default collection
+func (m *MongoDBClient) ExecuteGeoSearch(ctx context.Context, query interface{}, limit int) (int, error) {
+	return m.ExecuteGeoSearchInCollection(ctx, m.config.Collection, query, limit)
+}
+
+// ExecuteGeoSearchInCollection performs geospatial search using $nearSphere in a specific collection
+func (m *MongoDBClient) ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error) {
+	coll := m.database.Collection(collectionName)
+
+	// Execute geospatial query with optional limit
+	opts := options.Find()
+	if limit > 0 {
+		opts = opts.SetLimit(int64(limit))
+	}
+
+	// Track query execution time
+	startTime := time.Now()
+
+	cursor, err := coll.Find(ctx, query, opts)
+	if err != nil {
+		return 0, fmt.Errorf("geospatial search failed in collection %s: %w", collectionName, err)
+	}
+	defer cursor.Close(ctx)
+
+	count := 0
+	for cursor.Next(ctx) {
+		count++
+	}
+
+	if err := cursor.Err(); err != nil {
+		return 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	// Calculate latency
+	latency := time.Since(startTime)
+
+	// Debug log the query results after execution (matches Atlas Search pattern)
+	slog.Debug("Geospatial query",
+		"collection", collectionName,
+		"limit", limit,
+		"result_count", count,
+		"latency_us", latency.Microseconds(),
+		"latency", latency.String(),
+		"raw_query", bsonToJSON(query))
 
 	return count, nil
 }

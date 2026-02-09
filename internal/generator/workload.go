@@ -370,3 +370,56 @@ func GenerateQueryShapes(seed string, count int, maxParams config.QueryParameter
 
 	return shapes
 }
+
+// GeoQueryRequest encapsulates all parameters needed for geospatial query generation
+// NOTE: Geospatial queries use a SINGLE collection (BaseCollectionName), unlike text search
+// which distributes across multiple shard collections. TextShards is kept for config compatibility only.
+type GeoQueryRequest struct {
+	BaseCollectionName  string
+	TextShards          []int                       // NOT USED for geo - kept for config compatibility only
+	GeoDistanceVariants []config.GeoDistanceVariant // Distance filter configurations
+	Limits              []int                       // Result limit values
+}
+
+// GeoQueryResult contains the generated geospatial query and execution parameters
+type GeoQueryResult struct {
+	Query             string                    // Query as JSON string
+	RawQuery          interface{}               // Raw BSON query structure
+	CollectionName    string                    // Target collection
+	Limit             int                       // Result limit
+	SelectedTextShard int                       // Selected collection shard
+	DistanceVariant   config.GeoDistanceVariant // Selected distance variant
+}
+
+// GenerateGeoQueryRequest generates a complete geospatial query with randomly selected parameters
+// CRITICAL: Geospatial queries use a SINGLE base collection, NOT shard collections like text search
+func (wg *WorkloadGenerator) GenerateGeoQueryRequest(req GeoQueryRequest, geoGen *GeoGenerator) GeoQueryResult {
+	// Step 1: Randomly select distance variant
+	variant := req.GeoDistanceVariants[wg.rng.Intn(len(req.GeoDistanceVariants))]
+
+	// Step 2: Randomly select limit
+	limit := req.Limits[wg.rng.Intn(len(req.Limits))]
+
+	// Step 3: Generate geospatial query
+	params := GeoQueryParams{
+		WithMinDistance: variant.MinDistance,
+		WithMaxDistance: variant.MaxDistance,
+		Limit:           limit,
+	}
+	rawQuery := geoGen.GenerateGeoQuery(params)
+
+	// Step 4: Convert query to JSON string for logging
+	queryJSON := geoGen.FormatGeoQuery(params)
+
+	// Step 5: ALWAYS use base collection name (no sharding for geospatial)
+	collectionName := req.BaseCollectionName
+
+	return GeoQueryResult{
+		Query:             queryJSON,
+		RawQuery:          rawQuery,
+		CollectionName:    collectionName,
+		Limit:             limit,
+		SelectedTextShard: 0, // Not applicable for geo - always 0
+		DistanceVariant:   variant,
+	}
+}
