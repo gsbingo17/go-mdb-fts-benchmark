@@ -786,3 +786,23 @@ func (s *SpannerClient) warmupIndex(ctx context.Context, tableName string) error
 
 	return nil
 }
+
+// CreateGeoIndex - geospatial indexing not supported on Spanner
+func (s *SpannerClient) CreateGeoIndex(ctx context.Context, fieldName string) error {
+	return fmt.Errorf("geospatial indexing is not supported on Google Cloud Spanner")
+}
+
+// CreateGeoIndexForCollection - geospatial indexing not supported on Spanner
+func (s *SpannerClient) CreateGeoIndexForCollection(ctx context.Context, collectionName string, fieldName string) error {
+	return fmt.Errorf("geospatial indexing is not supported on Google Cloud Spanner")
+}
+
+// ExecuteGeoSearch - geospatial search not supported on Spanner
+func (s *SpannerClient) ExecuteGeoSearch(ctx context.Context, query interface{}, limit int) (int, error) {
+	return 0, fmt.Errorf("geospatial search is not supported on Google Cloud Spanner")
+}
+
+// ExecuteGeoSearchInCollection - geospatial search not supported on Spanner
+func (s *SpannerClient) ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error) {
+	return 0, fmt.Errorf("geospatial search is not supported on Google Cloud Spanner")
+}

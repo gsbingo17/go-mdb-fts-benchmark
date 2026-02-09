@@ -419,8 +419,41 @@ func (m *MongoDBClient) InsertDocumentsInCollection(ctx context.Context, collect
 	// Use unordered inserts for parallel processing
 	insertOpts := options.InsertMany().SetOrdered(false)
 
-	_, err := coll.InsertMany(ctx, documents, insertOpts)
+	result, err := coll.InsertMany(ctx, documents, insertOpts)
 	if err != nil {
+		// Check if error is a BulkWriteException using type assertion
+		if bulkErr, ok := err.(mongo.BulkWriteException); ok {
+			// Count non-duplicate errors (anything other than code 11000)
+			nonDuplicateErrors := 0
+			duplicateErrors := 0
+
+			for _, writeErr := range bulkErr.WriteErrors {
+				if writeErr.Code == 11000 { // E11000 duplicate key error
+					duplicateErrors++
+				} else {
+					nonDuplicateErrors++
+				}
+			}
+
+			// If we have only duplicate key errors, log and continue
+			if nonDuplicateErrors == 0 {
+				inserted := 0
+				if result != nil {
+					inserted = len(result.InsertedIDs)
+				}
+				slog.Debug("Skipped duplicate documents during insert",
+					"collection", collectionName,
+					"attempted", len(docs),
+					"inserted", inserted,
+					"duplicates_skipped", duplicateErrors)
+				return nil // Success - duplicates are expected and skipped
+			}
+
+			// If we have non-duplicate errors, return the full error
+			return fmt.Errorf("failed to insert documents into collection %s: %w", collectionName, err)
+		}
+
+		// Non-bulk-write error, return it
 		return fmt.Errorf("failed to insert documents into collection %s: %w", collectionName, err)
 	}
 	return nil

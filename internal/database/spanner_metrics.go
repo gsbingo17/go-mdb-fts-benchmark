@@ -51,22 +51,22 @@ func (c *SpannerMetricsCollector) Close() error {
 	return nil
 }
 
-// GetCPUUtilization fetches high priority CPU utilization from Cloud Monitoring
+// GetCPUUtilization fetches high priority user CPU utilization from Cloud Monitoring
+// Simplified to track only user CPU (is_system=false) for high priority tasks
+// Note: utilization_by_priority is an instance-level metric, not database-level
 func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float64, error) {
 	now := time.Now()
-	startTime := now.Add(-1 * time.Minute) // Look back 1 minute for fresher data
+	startTime := now.Add(-10 * time.Minute) // 10-minute lookback to account for 180-second metric visibility delay
 	endTime := now
 
-	// Build the metric filter for high priority CPU
-	// Metric: spanner.googleapis.com/instance/cpu/utilization_by_priority
-	// Filter by: priority="high", instance, database
-	// IMPORTANT: 'database' is a METRIC label, not a resource label
+	// Build the metric filter for high priority user CPU only
+	// CRITICAL: Do NOT filter by database - this is an instance-level metric
 	filter := fmt.Sprintf(`
 		metric.type = "spanner.googleapis.com/instance/cpu/utilization_by_priority"
 		AND resource.labels.instance_id = "%s"
-		AND metric.labels.database = "%s"
 		AND metric.labels.priority = "high"
-	`, c.instanceID, c.databaseID)
+		AND metric.labels.is_system = "false"
+	`, c.instanceID)
 
 	// Create the time interval
 	interval := &monitoringpb.TimeInterval{
@@ -74,29 +74,24 @@ func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float6
 		EndTime:   timestamppb.New(endTime),
 	}
 
-	// Create the request with proper cross-series aggregation
-	// This sums user CPU (is_system=false) + system CPU (is_system=true)
+	// Create the request with time-based alignment only (single time series, no cross-series aggregation needed)
 	req := &monitoringpb.ListTimeSeriesRequest{
 		Name:     fmt.Sprintf("projects/%s", c.projectID),
 		Filter:   filter,
 		Interval: interval,
 		Aggregation: &monitoringpb.Aggregation{
-			AlignmentPeriod:    durationpb.New(60 * time.Second), // 1 minute alignment
-			PerSeriesAligner:   monitoringpb.Aggregation_ALIGN_MEAN,
-			CrossSeriesReducer: monitoringpb.Aggregation_REDUCE_SUM, // Sum across is_system dimension
-			GroupByFields:      []string{"metric.labels.database"},  // Group by database
+			AlignmentPeriod:  durationpb.New(60 * time.Second),
+			PerSeriesAligner: monitoringpb.Aggregation_ALIGN_MEAN,
+			// No CrossSeriesReducer needed - only one time series (user CPU only)
 		},
 	}
 
 	// Execute the request
 	it := c.client.ListTimeSeries(ctx, req)
 
-	// Collect all time series for debugging
 	var latestValue float64
 	var latestTime time.Time
 	hasData := false
-	seriesCount := 0
-	var seriesDetails []string
 
 	for {
 		ts, err := it.Next()
@@ -104,54 +99,27 @@ func (c *SpannerMetricsCollector) GetCPUUtilization(ctx context.Context) (float6
 			break
 		}
 		if err != nil {
-			return 0, fmt.Errorf("failed to fetch time series: %w", err)
+			return 0, fmt.Errorf("failed to fetch CPU utilization: %w", err)
 		}
 
-		seriesCount++
-
-		// Get the most recent point from this time series
 		if len(ts.Points) > 0 {
 			for _, point := range ts.Points {
 				pointTime := point.Interval.EndTime.AsTime()
-				value := point.Value.GetDoubleValue()
-
-				// Track series details for logging
-				seriesDetails = append(seriesDetails, fmt.Sprintf("value=%.4f timestamp=%s",
-					value, pointTime.Format("15:04:05")))
-
 				if pointTime.After(latestTime) {
 					latestTime = pointTime
-					latestValue = value
+					latestValue = point.Value.GetDoubleValue()
 					hasData = true
 				}
 			}
 		}
 	}
 
-	// Log detailed aggregation info
-	fmt.Printf("DEBUG: Fetched %d time series from Cloud Monitoring\n", seriesCount)
-	for i, detail := range seriesDetails {
-		fmt.Printf("  Series %d: %s\n", i+1, detail)
-	}
-
 	if !hasData {
 		return 0, fmt.Errorf("no CPU utilization data available")
 	}
 
-	// Check metric staleness
-	staleness := time.Since(latestTime)
-	if staleness > 90*time.Second {
-		fmt.Printf("WARN: CPU metric is stale (%.1f seconds old, from %s)\n",
-			staleness.Seconds(), latestTime.Format(time.RFC3339))
-	} else {
-		fmt.Printf("DEBUG: CPU metric age: %.1f seconds (timestamp: %s)\n",
-			staleness.Seconds(), latestTime.Format(time.RFC3339))
-	}
-
 	// Convert from ratio to percentage (0.0-1.0 to 0-100)
 	cpuPercent := latestValue * 100.0
-	fmt.Printf("INFO: Spanner high-priority CPU: %.2f%% (raw value: %.4f)\n", cpuPercent, latestValue)
-
 	return cpuPercent, nil
 }
 
@@ -185,18 +153,18 @@ func (c *SpannerMetricsCollector) GetMetrics(ctx context.Context) (DatabaseMetri
 	return metrics, nil
 }
 
-// GetReadLatency fetches read latency from Cloud Monitoring
-func (c *SpannerMetricsCollector) GetReadLatency(ctx context.Context) (float64, error) {
+// GetLatency fetches latency metrics from Cloud Monitoring for a specific method
+func (c *SpannerMetricsCollector) GetLatency(ctx context.Context, method string) (float64, error) {
 	now := time.Now()
-	startTime := now.Add(-5 * time.Minute)
+	startTime := now.Add(-10 * time.Minute) // 10-minute lookback for metric propagation delays
 	endTime := now
 
 	filter := fmt.Sprintf(`
 		metric.type = "spanner.googleapis.com/api/request_latencies"
 		AND resource.labels.instance_id = "%s"
 		AND resource.labels.database = "%s"
-		AND metric.labels.method = "Read"
-	`, c.instanceID, c.databaseID)
+		AND metric.labels.method = "%s"
+	`, c.instanceID, c.databaseID, method)
 
 	interval := &monitoringpb.TimeInterval{
 		StartTime: timestamppb.New(startTime),
@@ -225,7 +193,7 @@ func (c *SpannerMetricsCollector) GetReadLatency(ctx context.Context) (float64, 
 			break
 		}
 		if err != nil {
-			return 0, fmt.Errorf("failed to fetch read latency: %w", err)
+			return 0, fmt.Errorf("failed to fetch %s latency: %w", method, err)
 		}
 
 		if len(ts.Points) > 0 {
@@ -241,70 +209,18 @@ func (c *SpannerMetricsCollector) GetReadLatency(ctx context.Context) (float64, 
 	}
 
 	if !hasData {
-		return 0, fmt.Errorf("no read latency data available")
+		return 0, fmt.Errorf("no %s latency data available", method)
 	}
 
 	return latestValue, nil
 }
 
+// GetReadLatency fetches read latency from Cloud Monitoring
+func (c *SpannerMetricsCollector) GetReadLatency(ctx context.Context) (float64, error) {
+	return c.GetLatency(ctx, "Read")
+}
+
 // GetWriteLatency fetches write latency from Cloud Monitoring
 func (c *SpannerMetricsCollector) GetWriteLatency(ctx context.Context) (float64, error) {
-	now := time.Now()
-	startTime := now.Add(-5 * time.Minute)
-	endTime := now
-
-	filter := fmt.Sprintf(`
-		metric.type = "spanner.googleapis.com/api/request_latencies"
-		AND resource.labels.instance_id = "%s"
-		AND resource.labels.database = "%s"
-		AND metric.labels.method = "Commit"
-	`, c.instanceID, c.databaseID)
-
-	interval := &monitoringpb.TimeInterval{
-		StartTime: timestamppb.New(startTime),
-		EndTime:   timestamppb.New(endTime),
-	}
-
-	req := &monitoringpb.ListTimeSeriesRequest{
-		Name:     fmt.Sprintf("projects/%s", c.projectID),
-		Filter:   filter,
-		Interval: interval,
-		Aggregation: &monitoringpb.Aggregation{
-			AlignmentPeriod:  durationpb.New(60 * time.Second),
-			PerSeriesAligner: monitoringpb.Aggregation_ALIGN_MEAN,
-		},
-	}
-
-	it := c.client.ListTimeSeries(ctx, req)
-
-	var latestValue float64
-	var latestTime time.Time
-	hasData := false
-
-	for {
-		ts, err := it.Next()
-		if err == iterator.Done {
-			break
-		}
-		if err != nil {
-			return 0, fmt.Errorf("failed to fetch write latency: %w", err)
-		}
-
-		if len(ts.Points) > 0 {
-			for _, point := range ts.Points {
-				pointTime := point.Interval.EndTime.AsTime()
-				if pointTime.After(latestTime) {
-					latestTime = pointTime
-					latestValue = point.Value.GetDoubleValue()
-					hasData = true
-				}
-			}
-		}
-	}
-
-	if !hasData {
-		return 0, fmt.Errorf("no write latency data available")
-	}
-
-	return latestValue, nil
+	return c.GetLatency(ctx, "Commit")
 }

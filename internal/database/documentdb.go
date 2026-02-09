@@ -403,3 +403,65 @@ func (d *DocumentDBClient) ExecuteAtlasSearch(ctx context.Context, query string,
 func (d *DocumentDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
 	return 0, fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
 }
+
+// CreateGeoIndex creates a 2dsphere index on the specified field for the default collection
+func (d *DocumentDBClient) CreateGeoIndex(ctx context.Context, fieldName string) error {
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: fieldName, Value: "2dsphere"}},
+	}
+
+	_, err := d.collection.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create 2dsphere index on field '%s': %w", fieldName, err)
+	}
+	fmt.Printf("INFO: Created 2dsphere geo index on field '%s'\n", fieldName)
+	return nil
+}
+
+// CreateGeoIndexForCollection creates a 2dsphere index on the specified field for a specific collection
+func (d *DocumentDBClient) CreateGeoIndexForCollection(ctx context.Context, collectionName string, fieldName string) error {
+	coll := d.database.Collection(collectionName)
+	indexModel := mongo.IndexModel{
+		Keys: bson.D{{Key: fieldName, Value: "2dsphere"}},
+	}
+
+	_, err := coll.Indexes().CreateOne(ctx, indexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create 2dsphere index on '%s.%s': %w", collectionName, fieldName, err)
+	}
+	fmt.Printf("INFO: Created 2dsphere geo index on collection '%s', field '%s'\n", collectionName, fieldName)
+	return nil
+}
+
+// ExecuteGeoSearch performs geospatial search on the default collection
+func (d *DocumentDBClient) ExecuteGeoSearch(ctx context.Context, query interface{}, limit int) (int, error) {
+	return d.ExecuteGeoSearchInCollection(ctx, d.config.Collection, query, limit)
+}
+
+// ExecuteGeoSearchInCollection performs geospatial search using $nearSphere in a specific collection
+func (d *DocumentDBClient) ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error) {
+	coll := d.database.Collection(collectionName)
+
+	// Execute geospatial query with optional limit
+	opts := options.Find()
+	if limit > 0 {
+		opts = opts.SetLimit(int64(limit))
+	}
+
+	cursor, err := coll.Find(ctx, query, opts)
+	if err != nil {
+		return 0, fmt.Errorf("geospatial search failed in DocumentDB collection %s: %w", collectionName, err)
+	}
+	defer cursor.Close(ctx)
+
+	count := 0
+	for cursor.Next(ctx) {
+		count++
+	}
+
+	if err := cursor.Err(); err != nil {
+		return 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	return count, nil
+}
