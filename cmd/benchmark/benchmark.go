@@ -365,20 +365,41 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 	var err error
 
 	if br.config.Workload.Mode == "cost_model" {
-		// Count documents across all shard collections
-		collections := br.getAllShardCollections()
-		for _, collectionName := range collections {
-			collCount, err := br.database.CountDocumentsInCollection(ctx, collectionName)
+		searchType := br.config.Workload.SearchType
+		if searchType == "" {
+			searchType = "text" // Default to text search
+		}
+
+		if searchType == "geospatial_search" {
+			// CRITICAL FIX: Geospatial uses SINGLE base collection, NOT sharded collections
+			// Count documents from base collection where geospatial data is actually stored
+			baseCollection := br.config.Database.Collection
+			count, err = br.database.CountDocumentsInCollection(ctx, baseCollection)
 			if err != nil {
 				// Collection doesn't exist yet - that's OK, count will be 0
-				slog.Debug("Collection does not exist yet", "collection", collectionName)
-				continue
+				slog.Debug("Collection does not exist yet", "collection", baseCollection)
+				count = 0
 			}
-			count += collCount
+			slog.Info("Counted existing documents in base collection (geospatial)",
+				"collection", baseCollection,
+				"count", count,
+				"note", "geospatial uses single collection, not sharded")
+		} else {
+			// Text/Atlas search: count documents across shard collections
+			collections := br.getAllShardCollections()
+			for _, collectionName := range collections {
+				collCount, err := br.database.CountDocumentsInCollection(ctx, collectionName)
+				if err != nil {
+					// Collection doesn't exist yet - that's OK, count will be 0
+					slog.Debug("Collection does not exist yet", "collection", collectionName)
+					continue
+				}
+				count += collCount
+			}
+			slog.Info("Counted existing documents across all shard collections",
+				"total_count", count,
+				"collections", collections)
 		}
-		slog.Info("Counted existing documents across all shard collections",
-			"total_count", count,
-			"collections", collections)
 	} else {
 		count, err = br.database.CountDocuments(ctx)
 		if err != nil {
