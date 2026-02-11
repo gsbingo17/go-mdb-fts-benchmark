@@ -444,28 +444,30 @@ func (s *SpannerClient) ExecuteSpannerSearchInTable(ctx context.Context, tableNa
 
 	// Build SQL with ranked search pattern (matching Atlas Search):
 	// 1. SELECT id and score (key-only return with relevance score like Atlas Search)
-	// 2. WHERE SEARCH() for filtering with built query
-	// 3. ORDER BY SCORE() DESC for relevance ranking
+	// 2. WHERE SEARCH() for filtering with built query (parameterized for plan caching)
+	// 3. ORDER BY score alias (no need to recalculate SCORE)
 	// 4. LIMIT for result set size
 	sql := fmt.Sprintf(`
 		SELECT 
 			id,
-			SCORE(%s, '%s') AS score
+			SCORE(%s, @searchQuery) AS score
 		FROM %s
-		WHERE SEARCH(%s, '%s')
-		ORDER BY SCORE(%s, '%s') DESC
+		WHERE SEARCH(%s, @searchQuery)
+		ORDER BY score DESC
 		LIMIT @limit
-	`, tokenlistExpr, searchQuery, tableName, tokenlistExpr, searchQuery, tokenlistExpr, searchQuery)
+	`, tokenlistExpr, tableName, tokenlistExpr)
 
 	// Debug: Log the complete SQL query
 	slog.Debug("Spanner SQL query",
 		"table", tableName,
-		"sql", sql)
+		"sql", sql,
+		"searchQuery_param", searchQuery)
 
 	stmt := spanner.Statement{
 		SQL: sql,
 		Params: map[string]interface{}{
-			"limit": limit,
+			"searchQuery": searchQuery,
+			"limit":       limit,
 		},
 	}
 
