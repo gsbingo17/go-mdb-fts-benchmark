@@ -439,23 +439,24 @@ func (s *SpannerClient) ExecuteSpannerSearchInTable(ctx context.Context, tableNa
 		"search_query", searchQuery,
 		"limit", limit)
 
-	// Use TOKENLIST_CONCAT to combine all token fields for unified search/scoring
-	tokenlistExpr := "TOKENLIST_CONCAT([text1_tokens, text2_tokens, text3_tokens])"
+	// Use combined_tokens column directly (single TOKENLIST with all text fields)
+	// Schema: combined_tokens TOKENLIST AS (TOKENIZE_FULLTEXT(text1 || ' ' || text2 || ' ' || text3)) HIDDEN
+	// This is simpler and more efficient than TOKENLIST_CONCAT([text1_tokens, text2_tokens, text3_tokens])
 
 	// Build SQL with ranked search pattern (matching Atlas Search):
 	// 1. SELECT id and score (key-only return with relevance score like Atlas Search)
-	// 2. WHERE SEARCH() for filtering with built query (parameterized for plan caching)
-	// 3. ORDER BY score alias (no need to recalculate SCORE)
+	// 2. WHERE SEARCH() for filtering with built query
+	// 3. ORDER BY SCORE() DESC for relevance ranking (using score alias to avoid recalculation)
 	// 4. LIMIT for result set size
 	sql := fmt.Sprintf(`
-		SELECT 
+		SELECT
 			id,
-			SCORE(%s, @searchQuery) AS score
+			SCORE(combined_tokens, @searchQuery) AS score
 		FROM %s
-		WHERE SEARCH(%s, @searchQuery)
+		WHERE SEARCH(combined_tokens, @searchQuery)
 		ORDER BY score DESC
 		LIMIT @limit
-	`, tokenlistExpr, tableName, tokenlistExpr)
+	`, tableName)
 
 	// Debug: Log the complete SQL query
 	slog.Debug("Spanner SQL query",
