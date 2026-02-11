@@ -412,43 +412,59 @@ func (s *SpannerClient) DropIndexesForCollection(ctx context.Context, collection
 
 // ExecuteSpannerSearch executes a full-text search on the default table
 func (s *SpannerClient) ExecuteSpannerSearch(ctx context.Context, query string, limit int) (int, error) {
-	return s.ExecuteSpannerSearchInTable(ctx, s.defaultTable, query, limit)
+	return s.ExecuteSpannerSearchInTable(ctx, s.defaultTable, query, limit, "AND")
 }
 
 // ExecuteSpannerSearchInTable executes a ranked full-text search on a specific table
 // Uses Spanner's SCORE() function for relevance ranking, similar to Atlas Search
 // Returns key-only results (id and score) sorted by relevance score
-func (s *SpannerClient) ExecuteSpannerSearchInTable(ctx context.Context, tableName string, query string, limit int) (int, error) {
+func (s *SpannerClient) ExecuteSpannerSearchInTable(ctx context.Context, tableName string, query string, limit int, operator string) (int, error) {
 	if query == "" {
 		return 0, fmt.Errorf("query cannot be empty")
 	}
 
-	// Build ranked search query using TOKENLIST_CONCAT for multi-field search
-	// This aligns with Atlas Search uniform indexing strategy
-	// All tables search across text1, text2, text3 fields
+	// Build Spanner SEARCH query using SpannerQueryBuilder
+	builder := NewSpannerQueryBuilder()
+	searchQuery := builder.BuildSearchQuery(query, operator)
+
+	if searchQuery == "" {
+		return 0, fmt.Errorf("failed to build search query")
+	}
+
+	// Debug: Log the raw Spanner SEARCH query
+	slog.Debug("Spanner SEARCH query generated",
+		"table", tableName,
+		"input_query", query,
+		"operator", operator,
+		"search_query", searchQuery,
+		"limit", limit)
 
 	// Use TOKENLIST_CONCAT to combine all token fields for unified search/scoring
 	tokenlistExpr := "TOKENLIST_CONCAT([text1_tokens, text2_tokens, text3_tokens])"
 
 	// Build SQL with ranked search pattern (matching Atlas Search):
 	// 1. SELECT id and score (key-only return with relevance score like Atlas Search)
-	// 2. WHERE SEARCH() for filtering
+	// 2. WHERE SEARCH() for filtering with built query
 	// 3. ORDER BY SCORE() DESC for relevance ranking
 	// 4. LIMIT for result set size
 	sql := fmt.Sprintf(`
 		SELECT 
 			id,
-			SCORE(%s, @query) AS score
+			SCORE(%s, '%s') AS score
 		FROM %s
-		WHERE SEARCH(%s, @query)
-		ORDER BY SCORE(%s, @query) DESC
+		WHERE SEARCH(%s, '%s')
+		ORDER BY SCORE(%s, '%s') DESC
 		LIMIT @limit
-	`, tokenlistExpr, tableName, tokenlistExpr, tokenlistExpr)
+	`, tokenlistExpr, searchQuery, tableName, tokenlistExpr, searchQuery, tokenlistExpr, searchQuery)
+
+	// Debug: Log the complete SQL query
+	slog.Debug("Spanner SQL query",
+		"table", tableName,
+		"sql", sql)
 
 	stmt := spanner.Statement{
 		SQL: sql,
 		Params: map[string]interface{}{
-			"query": query,
 			"limit": limit,
 		},
 	}
@@ -480,7 +496,7 @@ func (s *SpannerClient) ExecuteTextSearch(ctx context.Context, query string, lim
 
 // ExecuteTextSearchInCollection executes a text search in a specific table
 func (s *SpannerClient) ExecuteTextSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
-	return s.ExecuteSpannerSearchInTable(ctx, collectionName, query, limit)
+	return s.ExecuteSpannerSearchInTable(ctx, collectionName, query, limit, "AND")
 }
 
 // ExecuteAtlasSearch executes an Atlas-style search (maps to Spanner search)
@@ -489,8 +505,8 @@ func (s *SpannerClient) ExecuteAtlasSearch(ctx context.Context, query string, li
 }
 
 // ExecuteAtlasSearchInCollection executes Atlas search in a specific table
-func (s *SpannerClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
-	return s.ExecuteSpannerSearchInTable(ctx, collectionName, query, limit)
+func (s *SpannerClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int, operator string) (int, error) {
+	return s.ExecuteSpannerSearchInTable(ctx, collectionName, query, limit, operator)
 }
 
 // InsertDocument inserts a single document into the default table
@@ -769,7 +785,7 @@ func (s *SpannerClient) warmupIndex(ctx context.Context, tableName string) error
 		warmupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		_, err := s.ExecuteSpannerSearchInTable(warmupCtx, tableName, query, 10)
+		_, err := s.ExecuteSpannerSearchInTable(warmupCtx, tableName, query, 10, "AND")
 		if err != nil {
 			// Log but don't fail - warmup is best-effort
 			slog.Debug("Warmup query failed (non-critical)",

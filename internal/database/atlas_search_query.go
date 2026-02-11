@@ -12,6 +12,7 @@ type ParsedQuery struct {
 	NegativeTerms   []string
 	PositivePhrases []string
 	NegativePhrases []string
+	Operator        string // "AND" or "OR" for positive terms/phrases (default: "AND")
 }
 
 // ParseSearchQuery parses a raw query string into structured components
@@ -91,6 +92,12 @@ func BuildAtlasSearchQuery(parsed ParsedQuery, indexName string, searchPaths []s
 	hasPositive := len(parsed.PositiveTerms) > 0 || len(parsed.PositivePhrases) > 0
 	hasNegative := len(parsed.NegativeTerms) > 0 || len(parsed.NegativePhrases) > 0
 
+	// Normalize operator (default to AND if not specified or empty)
+	operator := parsed.Operator
+	if operator == "" {
+		operator = "AND"
+	}
+
 	// Case 1: Simple single positive term (most common case)
 	if len(parsed.PositiveTerms) == 1 && !hasNegative && len(parsed.PositivePhrases) == 0 {
 		return bson.D{
@@ -124,13 +131,33 @@ func BuildAtlasSearchQuery(parsed ParsedQuery, indexName string, searchPaths []s
 		}
 	}
 
-	// Case 4: Complex query with must and/or mustNot
+	// Case 4: Multiple positive terms/phrases with OR semantics (no negatives)
+	if hasPositive && !hasNegative && operator == "OR" {
+		should := buildShouldClauses(parsed, searchPaths)
+		return bson.D{
+			{Key: "index", Value: indexName},
+			{Key: "compound", Value: bson.D{
+				{Key: "should", Value: should},
+				{Key: "minimumShouldMatch", Value: 1}, // At least 1 must match
+			}},
+		}
+	}
+
+	// Case 5: Complex query with positive and/or negative terms
 	compound := bson.D{}
 
-	// Build must clauses
+	// Build positive clauses (must or should based on operator)
 	if hasPositive {
-		must := buildMustClauses(parsed, searchPaths)
-		compound = append(compound, bson.E{Key: "must", Value: must})
+		if operator == "OR" {
+			// Use should[] for OR semantics
+			should := buildShouldClauses(parsed, searchPaths)
+			compound = append(compound, bson.E{Key: "should", Value: should})
+			compound = append(compound, bson.E{Key: "minimumShouldMatch", Value: 1})
+		} else {
+			// Use must[] for AND semantics (default)
+			must := buildMustClauses(parsed, searchPaths)
+			compound = append(compound, bson.E{Key: "must", Value: must})
+		}
 	}
 
 	// Build mustNot clauses
@@ -170,6 +197,33 @@ func buildMustClauses(parsed ParsedQuery, searchPaths []string) bson.A {
 	}
 
 	return must
+}
+
+// buildShouldClauses builds the 'should' array for OR queries
+func buildShouldClauses(parsed ParsedQuery, searchPaths []string) bson.A {
+	should := bson.A{}
+
+	// Add positive terms
+	for _, term := range parsed.PositiveTerms {
+		should = append(should, bson.D{
+			{Key: "text", Value: bson.D{
+				{Key: "query", Value: term},
+				{Key: "path", Value: searchPaths},
+			}},
+		})
+	}
+
+	// Add positive phrases
+	for _, phrase := range parsed.PositivePhrases {
+		should = append(should, bson.D{
+			{Key: "phrase", Value: bson.D{
+				{Key: "query", Value: phrase},
+				{Key: "path", Value: searchPaths},
+			}},
+		})
+	}
+
+	return should
 }
 
 // buildMustNotClauses builds the 'mustNot' array for compound queries

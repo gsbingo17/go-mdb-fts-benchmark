@@ -15,13 +15,20 @@ func NewSpannerQueryBuilder() *SpannerQueryBuilder {
 
 // BuildSearchQuery converts a MongoDB text search query to Spanner SEARCH syntax
 // MongoDB query format: "word1 word2 -excluded \"exact phrase\""
-// Spanner SEARCH format: SEARCH(tokens, 'word1 AND word2 NOT excluded AND "exact phrase"')
-func (b *SpannerQueryBuilder) BuildSearchQuery(query string) string {
+// Spanner SEARCH format: SEARCH(tokens, 'word1 AND word2 -excluded AND "exact phrase"')
+// operator: "AND" or "OR" for positive terms/phrases (default: "AND")
+func (b *SpannerQueryBuilder) BuildSearchQuery(query string, operator string) string {
 	if query == "" {
 		return ""
 	}
 
-	var conditions []string
+	// Normalize operator (default to AND if not specified or empty)
+	if operator == "" {
+		operator = "AND"
+	}
+
+	var positiveConditions []string
+	var negativeConditions []string
 	inQuote := false
 	currentToken := strings.Builder{}
 	isNegation := false
@@ -38,9 +45,9 @@ func (b *SpannerQueryBuilder) BuildSearchQuery(query string) string {
 				phrase := currentToken.String()
 				if phrase != "" {
 					if isNegation {
-						conditions = append(conditions, fmt.Sprintf(`NOT "%s"`, phrase))
+						negativeConditions = append(negativeConditions, fmt.Sprintf(`-"%s"`, phrase))
 					} else {
-						conditions = append(conditions, fmt.Sprintf(`"%s"`, phrase))
+						positiveConditions = append(positiveConditions, fmt.Sprintf(`"%s"`, phrase))
 					}
 				}
 				currentToken.Reset()
@@ -66,9 +73,9 @@ func (b *SpannerQueryBuilder) BuildSearchQuery(query string) string {
 				// End of token
 				token := currentToken.String()
 				if isNegation {
-					conditions = append(conditions, fmt.Sprintf("NOT %s", token))
+					negativeConditions = append(negativeConditions, fmt.Sprintf("-%s", token))
 				} else {
-					conditions = append(conditions, token)
+					positiveConditions = append(positiveConditions, token)
 				}
 				currentToken.Reset()
 				isNegation = false
@@ -83,24 +90,47 @@ func (b *SpannerQueryBuilder) BuildSearchQuery(query string) string {
 	if currentToken.Len() > 0 {
 		token := currentToken.String()
 		if isNegation {
-			conditions = append(conditions, fmt.Sprintf("NOT %s", token))
+			negativeConditions = append(negativeConditions, fmt.Sprintf("-%s", token))
 		} else {
-			conditions = append(conditions, token)
+			positiveConditions = append(positiveConditions, token)
 		}
 	}
 
-	if len(conditions) == 0 {
+	// Build final query
+	var parts []string
+
+	// Join positive conditions with the specified operator
+	if len(positiveConditions) > 0 {
+		if len(positiveConditions) == 1 {
+			parts = append(parts, positiveConditions[0])
+		} else {
+			// Multiple positive conditions - use operator
+			positiveQuery := strings.Join(positiveConditions, " "+operator+" ")
+			if operator == "OR" && len(negativeConditions) > 0 {
+				// Wrap OR conditions in parentheses when combined with NOT
+				positiveQuery = "(" + positiveQuery + ")"
+			}
+			parts = append(parts, positiveQuery)
+		}
+	}
+
+	// Negative conditions always use AND
+	if len(negativeConditions) > 0 {
+		parts = append(parts, strings.Join(negativeConditions, " AND "))
+	}
+
+	if len(parts) == 0 {
 		return ""
 	}
 
-	// Join with AND
-	return strings.Join(conditions, " AND ")
+	// Join all parts with AND
+	return strings.Join(parts, " AND ")
 }
 
 // BuildSearchQueryForFields builds a SEARCH query for specific tokenized fields
 // For uniform indexing, all tables search across text1, text2, text3
-func (b *SpannerQueryBuilder) BuildSearchQueryForFields(query string, fields []string) string {
-	searchQuery := b.BuildSearchQuery(query)
+func (b *SpannerQueryBuilder) BuildSearchQueryForFields(query string, fields []string, operator string) string {
+	searchQuery := b.BuildSearchQuery(query, operator)
 	if searchQuery == "" {
 		return ""
 	}

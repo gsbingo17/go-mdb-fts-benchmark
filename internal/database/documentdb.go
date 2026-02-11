@@ -400,7 +400,7 @@ func (d *DocumentDBClient) ExecuteAtlasSearch(ctx context.Context, query string,
 }
 
 // ExecuteAtlasSearchInCollection - Atlas Search not supported on DocumentDB
-func (d *DocumentDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
+func (d *DocumentDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int, operator string) (int, error) {
 	return 0, fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
 }
 

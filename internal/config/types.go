@@ -70,11 +70,12 @@ type GeoDistanceVariant struct {
 
 // QueryParameters defines the shape of a text search query
 type QueryParameters struct {
-	PositiveTerms   int `yaml:"positive_terms"`
-	NegativeTerms   int `yaml:"negative_terms"`
-	PositivePhrases int `yaml:"positive_phrases"`
-	NegativePhrases int `yaml:"negative_phrases"`
-	PhraseLength    int `yaml:"phrase_length"`
+	PositiveTerms   int    `yaml:"positive_terms"`
+	NegativeTerms   int    `yaml:"negative_terms"`
+	PositivePhrases int    `yaml:"positive_phrases"`
+	NegativePhrases int    `yaml:"negative_phrases"`
+	PhraseLength    int    `yaml:"phrase_length"`
+	Operator        string `yaml:"operator"` // "AND" or "OR" for positive terms/phrases (default: "AND")
 }
 
 // ReadWriteRatio defines the ratio of read vs write operations

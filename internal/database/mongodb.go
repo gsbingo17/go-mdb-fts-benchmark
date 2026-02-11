@@ -593,22 +593,23 @@ func (m *MongoDBClient) DropSearchIndexesForCollection(ctx context.Context, coll
 
 // ExecuteAtlasSearch performs Atlas Search on default collection
 func (m *MongoDBClient) ExecuteAtlasSearch(ctx context.Context, query string, limit int) (int, error) {
-	return m.ExecuteAtlasSearchInCollection(ctx, m.config.Collection, query, limit)
+	return m.ExecuteAtlasSearchInCollection(ctx, m.config.Collection, query, limit, "AND")
 }
 
 // ExecuteAtlasSearchInCollection performs Atlas Search using $search aggregation
-func (m *MongoDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error) {
+func (m *MongoDBClient) ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int, operator string) (int, error) {
 	coll := m.database.Collection(collectionName)
 
 	// Parse the query string into structured components
 	parsed := ParseSearchQuery(query)
+	parsed.Operator = operator // Set operator from parameter
 
 	// Build the appropriate Atlas Search query structure
 	searchPaths := []string{"text1", "text2", "text3"}
 	searchQuery := BuildAtlasSearchQuery(parsed, "default", searchPaths)
 
 	// Debug log the raw Atlas Search query structure
-	slog.Debug("Atlas Search query", "input_query", query, "raw_query", bsonToJSON(searchQuery))
+	slog.Debug("Atlas Search query", "input_query", query, "operator", operator, "raw_query", bsonToJSON(searchQuery))
 
 	// Build $search aggregation pipeline
 	pipeline := mongo.Pipeline{

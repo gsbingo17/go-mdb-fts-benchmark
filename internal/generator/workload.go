@@ -26,6 +26,7 @@ type QueryResult struct {
 	Limit             int
 	SelectedTextShard int
 	SelectedParams    config.QueryParameters
+	Operator          string // "AND" or "OR" for the query
 }
 
 // WorkloadGenerator generates search queries and workload patterns
@@ -297,12 +298,19 @@ func (wg *WorkloadGenerator) GenerateTokenQueryRequest(req QueryRequest) QueryRe
 	// Step 5: Determine collection name
 	collectionName := fmt.Sprintf("%s%d", req.BaseCollectionName, textShard)
 
+	// Step 6: Extract operator (default to "AND" if not specified)
+	operator := params.Operator
+	if operator == "" {
+		operator = "AND"
+	}
+
 	return QueryResult{
 		Query:             query,
 		CollectionName:    collectionName,
 		Limit:             limit,
 		SelectedTextShard: textShard,
 		SelectedParams:    params,
+		Operator:          operator,
 	}
 }
 

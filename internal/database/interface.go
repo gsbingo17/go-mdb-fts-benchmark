@@ -62,7 +62,7 @@ type Database interface {
 	ExecuteTextSearch(ctx context.Context, query string, limit int) (int, error)
 	ExecuteTextSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
 	ExecuteAtlasSearch(ctx context.Context, query string, limit int) (int, error)
-	ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int) (int, error)
+	ExecuteAtlasSearchInCollection(ctx context.Context, collectionName string, query string, limit int, operator string) (int, error)
 	ExecuteGeoSearch(ctx context.Context, query interface{}, limit int) (int, error)
 	ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error)
 	InsertDocument(ctx context.Context, doc Document) error

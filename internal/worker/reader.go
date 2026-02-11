@@ -146,6 +146,7 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 					queryResult.CollectionName,
 					queryResult.Query,
 					queryResult.Limit,
+					queryResult.Operator,
 				)
 			} else {
 				// Default to $text search
