@@ -548,6 +548,13 @@ func (wp *WorkerPool) GetWorkerStatus() WorkerStatus {
 	}
 }
 
+// GetWriters returns the write workers for external configuration (e.g., write test phases)
+func (wp *WorkerPool) GetWriters() []*WriteWorker {
+	wp.mu.RLock()
+	defer wp.mu.RUnlock()
+	return wp.writers
+}
+
 // WorkerStatus represents the current state of the worker pool
 type WorkerStatus struct {
 	ReadWorkers  int  `json:"read_workers"`

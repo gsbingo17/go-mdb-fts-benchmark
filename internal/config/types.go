@@ -59,6 +59,13 @@ type WorkloadConfig struct {
 	GeoQueryLimits      []int                `yaml:"geo_query_limits"`      // Array of limit values for geospatial queries
 	GeoDistanceVariants []GeoDistanceVariant `yaml:"geo_distance_variants"` // Different distance filter combinations
 	GeoSeed             int64                `yaml:"geo_seed"`              // Seed for geospatial data/query generation (0 = use timestamp for random)
+
+	// Write workload configuration (for cost_model atlas_search write tests)
+	WriteOperations    []string      `yaml:"write_operations"`     // Sequential phases: ["CREATE", "UPDATE", "DELETE"]
+	WritePhaseDuration time.Duration `yaml:"write_phase_duration"` // Duration per write phase (default: 10m)
+	WriteTokens        int           `yaml:"write_tokens"`         // Number of tokens per write document (default: 1000)
+	WriteTokenSizes    []int         `yaml:"write_token_sizes"`    // Token sizes to randomly select from [50, 100, 200, 1000]
+	WriteCollection    string        `yaml:"write_collection"`     // Single collection for writes (default: "DatabaseSearchWords")
 }
 
 // GeoDistanceVariant defines a geospatial query distance filter configuration

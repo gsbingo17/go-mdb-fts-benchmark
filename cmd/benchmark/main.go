@@ -57,8 +57,9 @@ func main() {
 
 	go func() {
 		sig := <-sigChan
-		slog.Info("Received shutdown signal", "signal", sig)
+		slog.Info("Received shutdown signal, exiting immediately", "signal", sig)
 		cancel()
+		os.Exit(0)
 	}()
 
 	// Initialize and run benchmark

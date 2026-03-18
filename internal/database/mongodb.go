@@ -459,6 +459,39 @@ func (m *MongoDBClient) InsertDocumentsInCollection(ctx context.Context, collect
 	return nil
 }
 
+// ReplaceDocument replaces a document by ID in the default collection (upsert)
+func (m *MongoDBClient) ReplaceDocument(ctx context.Context, id string, doc interface{}) error {
+	return m.ReplaceDocumentInCollection(ctx, m.config.Collection, id, doc)
+}
+
+// ReplaceDocumentInCollection replaces a document by ID in a specific collection (upsert)
+func (m *MongoDBClient) ReplaceDocumentInCollection(ctx context.Context, collectionName string, id string, doc interface{}) error {
+	coll := m.database.Collection(collectionName)
+	filter := bson.D{{Key: "_id", Value: id}}
+	opts := options.Replace().SetUpsert(true)
+	_, err := coll.ReplaceOne(ctx, filter, doc, opts)
+	if err != nil {
+		return fmt.Errorf("failed to replace document in collection %s: %w", collectionName, err)
+	}
+	return nil
+}
+
+// DeleteDocument deletes a document by ID from the default collection
+func (m *MongoDBClient) DeleteDocument(ctx context.Context, id string) error {
+	return m.DeleteDocumentInCollection(ctx, m.config.Collection, id)
+}
+
+// DeleteDocumentInCollection deletes a document by ID from a specific collection
+func (m *MongoDBClient) DeleteDocumentInCollection(ctx context.Context, collectionName string, id string) error {
+	coll := m.database.Collection(collectionName)
+	filter := bson.D{{Key: "_id", Value: id}}
+	_, err := coll.DeleteOne(ctx, filter)
+	if err != nil {
+		return fmt.Errorf("failed to delete document from collection %s: %w", collectionName, err)
+	}
+	return nil
+}
+
 // CountDocuments returns the number of documents in the collection
 func (m *MongoDBClient) CountDocuments(ctx context.Context) (int64, error) {
 	count, err := m.collection.CountDocuments(ctx, bson.D{})

@@ -103,6 +103,28 @@ func applyDefaults(config *Config) error {
 		config.Workload.StabilityWindow = 30 * time.Minute
 	}
 
+	// Write workload defaults (only applied when write_operations is configured)
+	if len(config.Workload.WriteOperations) > 0 {
+		if config.Workload.WritePhaseDuration == 0 {
+			config.Workload.WritePhaseDuration = 10 * time.Minute
+		}
+		if config.Workload.WriteTokens == 0 {
+			config.Workload.WriteTokens = 1000
+		}
+		if len(config.Workload.WriteTokenSizes) == 0 {
+			config.Workload.WriteTokenSizes = []int{50, 100, 200, 1000}
+		}
+		if config.Workload.WriteCollection == "" {
+			// For Spanner, default write collection to the table name
+			// For MongoDB, default to "DatabaseSearchWords"
+			if config.Database.Type == "spanner" && config.Database.Table != "" {
+				config.Workload.WriteCollection = config.Database.Table
+			} else {
+				config.Workload.WriteCollection = "DatabaseSearchWords"
+			}
+		}
+	}
+
 	// Metrics defaults
 	if config.Metrics.CollectionInterval == 0 {
 		config.Metrics.CollectionInterval = 10 * time.Second
@@ -186,8 +208,8 @@ func validate(config *Config) error {
 		return fmt.Errorf("metrics.export_format must be one of: json, csv, prometheus")
 	}
 
-	// Cost model mode specific validation
-	if config.Workload.Mode == "cost_model" {
+	// Cost model mode specific validation (skip for write-only workloads)
+	if config.Workload.Mode == "cost_model" && len(config.Workload.WriteOperations) == 0 {
 		searchType := config.Workload.SearchType
 		if searchType == "" {
 			searchType = "text" // Default
@@ -231,6 +253,27 @@ func validate(config *Config) error {
 			// Validate query parameters exist
 			if len(config.Workload.QueryParameters) == 0 && !config.Workload.UseRandomQueries {
 				return fmt.Errorf("workload.query_parameters array cannot be empty when use_random_queries is false in cost_model mode")
+			}
+		}
+	}
+
+	// Write workload validation
+	if len(config.Workload.WriteOperations) > 0 {
+		validOps := map[string]bool{"CREATE": true, "UPDATE": true, "DELETE": true}
+		for i, op := range config.Workload.WriteOperations {
+			if !validOps[op] {
+				return fmt.Errorf("workload.write_operations[%d] must be 'CREATE', 'UPDATE', or 'DELETE', got '%s'", i, op)
+			}
+		}
+		if config.Workload.WritePhaseDuration <= 0 {
+			return fmt.Errorf("workload.write_phase_duration must be positive")
+		}
+		if config.Workload.WriteTokens <= 0 {
+			return fmt.Errorf("workload.write_tokens must be positive")
+		}
+		for i, size := range config.Workload.WriteTokenSizes {
+			if size <= 0 {
+				return fmt.Errorf("workload.write_token_sizes[%d] must be positive, got %d", i, size)
 			}
 		}
 	}

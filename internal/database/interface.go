@@ -69,6 +69,10 @@ type Database interface {
 	InsertDocumentInCollection(ctx context.Context, collectionName string, doc Document) error
 	InsertDocuments(ctx context.Context, docs []Document) error
 	InsertDocumentsInCollection(ctx context.Context, collectionName string, docs []Document) error
+	ReplaceDocument(ctx context.Context, id string, doc interface{}) error
+	ReplaceDocumentInCollection(ctx context.Context, collectionName string, id string, doc interface{}) error
+	DeleteDocument(ctx context.Context, id string) error
+	DeleteDocumentInCollection(ctx context.Context, collectionName string, id string) error
 	CountDocuments(ctx context.Context) (int64, error)
 	CountDocumentsInCollection(ctx context.Context, collectionName string) (int64, error)
 	DropCollection(ctx context.Context) error

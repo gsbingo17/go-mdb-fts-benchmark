@@ -167,6 +167,11 @@ func (wc *WorkloadController) decreaseQPS(percentage float64) {
 	wc.config.TargetQPS = newQPS
 }
 
+// GetWorkerPool returns the underlying worker pool for direct access
+func (wc *WorkloadController) GetWorkerPool() *WorkerPool {
+	return wc.workerPool
+}
+
 // GetWorkerStatus returns current worker status
 func (wc *WorkloadController) GetWorkerStatus() WorkerStatus {
 	return wc.workerPool.GetWorkerStatus()

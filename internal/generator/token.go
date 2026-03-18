@@ -262,3 +262,65 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// SearchWriteTokenSizes are the standard token sizes for write cost tests.
+var SearchWriteTokenSizes = []int{50, 100, 200, 1000}
+
+// hashStringToInt64 creates a hash of a string to use as a deterministic random seed.
+func hashStringToInt64(s string) int64 {
+	h := fnv.New64a()
+	h.Write([]byte(s))
+	return int64(h.Sum64())
+}
+
+// reverse reverses a string.
+func reverse(s string) string {
+	r := []rune(s)
+	for i, j := 0, len(r)-1; i < len(r)/2; i, j = i+1, j-1 {
+		r[i], r[j] = r[j], r[i]
+	}
+	return string(r)
+}
+
+// MakeDatabaseTextWriteDocument generates a BSON document for text search write tests.
+// The document content is deterministic based on the ID hash, ensuring reproducibility.
+//
+// id: The document ID (existing Base64URL ID from NextPreloadIdBytes/PreloadIdBytesToId).
+// tokens: The number of tokens in the text field.
+// tokenSize: The size (character length) of each token.
+// update: If true, reverses every second token to simulate an update.
+//
+// Returns a map with "_id" and "text1" fields (only text1 is written, matching reference).
+func MakeDatabaseTextWriteDocument(id string, tokens, tokenSize int, update bool) map[string]interface{} {
+	doc := map[string]interface{}{
+		"_id": id,
+	}
+
+	seed := hashStringToInt64(id)
+	rng := rand.New(rand.NewSource(seed))
+
+	var fieldValue strings.Builder
+	fieldValue.Grow(tokens * (tokenSize + 1))
+
+	for i := 0; i < tokens; i++ {
+		var tokenValue strings.Builder
+		tokenValue.Grow(tokenSize)
+		for k := 0; k < tokenSize-1; k += 7 {
+			digits := 7
+			if tokenSize-1-k < 7 {
+				digits = tokenSize - 1 - k
+			}
+			appendEncodedNumber(&tokenValue, rng.Int(), digits, 'a')
+		}
+
+		tokenStr := tokenValue.String()
+		if update && (i&1) != 0 {
+			tokenStr = reverse(tokenStr)
+		}
+		fieldValue.WriteString(tokenStr)
+		fieldValue.WriteByte(' ')
+	}
+
+	doc[DatabaseSearchFields[0]] = fieldValue.String()
+	return doc
+}

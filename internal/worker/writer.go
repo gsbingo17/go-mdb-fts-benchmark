@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
@@ -27,6 +30,16 @@ type WriteWorker struct {
 	textShards      []int // Array of shard numbers (e.g., [1, 2, 3])
 	workerCount     int
 	baseCollection  string // Base collection name for shard tables
+
+	// Write test mode configuration
+	isWriteTestMode bool
+	writeOp         string   // Current write operation: "CREATE", "UPDATE", "DELETE"
+	writeTokens     int      // Number of tokens per write document
+	writeTokenSizes []int    // Token sizes to randomly select from
+	writeCollection string   // Single collection for write tests
+	preloadedIDs    []string // Pre-generated IDs for write operations
+	preloadedIDsMu  sync.RWMutex
+	writeRng        *rand.Rand // RNG for write operations
 }
 
 // NewWriteWorker creates a new write worker
@@ -48,6 +61,8 @@ func NewWriteWorker(
 		textShards:      nil,
 		workerCount:     0,
 		baseCollection:  "",
+		isWriteTestMode: false,
+		writeRng:        rand.New(rand.NewSource(time.Now().UnixNano() + int64(id))),
 	}
 }
 
@@ -57,6 +72,35 @@ func (ww *WriteWorker) SetCostModelMode(enabled bool, textShards []int, workerCo
 	ww.textShards = textShards
 	ww.workerCount = workerCount
 	ww.baseCollection = baseCollection
+}
+
+// SetWriteTestMode configures the worker for write test mode (CREATE/UPDATE/DELETE phases)
+func (ww *WriteWorker) SetWriteTestMode(writeTokens int, writeTokenSizes []int, writeCollection string) {
+	ww.isWriteTestMode = true
+	ww.writeTokens = writeTokens
+	ww.writeTokenSizes = writeTokenSizes
+	ww.writeCollection = writeCollection
+}
+
+// SetWriteOp sets the current write operation phase (CREATE, UPDATE, DELETE)
+func (ww *WriteWorker) SetWriteOp(op string) {
+	ww.writeOp = op
+}
+
+// SetPreloadedIDs sets the pre-generated IDs for write operations
+func (ww *WriteWorker) SetPreloadedIDs(ids []string) {
+	ww.preloadedIDsMu.Lock()
+	defer ww.preloadedIDsMu.Unlock()
+	ww.preloadedIDs = ids
+}
+
+// GetPreloadedIDs returns a copy of the current preloaded IDs (thread-safe)
+func (ww *WriteWorker) GetPreloadedIDs() []string {
+	ww.preloadedIDsMu.RLock()
+	defer ww.preloadedIDsMu.RUnlock()
+	result := make([]string, len(ww.preloadedIDs))
+	copy(result, ww.preloadedIDs)
+	return result
 }
 
 // Start begins the write worker operations
@@ -83,15 +127,19 @@ func (ww *WriteWorker) Start(ctx context.Context) {
 	}
 }
 
-// insertDocument performs a single document insertion
+// insertDocument performs a single document insertion or write test operation
 func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 	startTime := time.Now()
 
-	// Generate document and insert based on mode
 	var err error
 	var doc database.Document
+	var opName string
 
-	if ww.isCostModelMode {
+	if ww.isWriteTestMode {
+		// Write test mode: CREATE/UPDATE/DELETE operations
+		err = ww.executeWriteTestOp(ctx)
+		opName = fmt.Sprintf("write_test_%s", strings.ToLower(ww.writeOp))
+	} else if ww.isCostModelMode {
 		// In cost_model mode, insert into a specific shard table
 		maxTextShard := 0
 		for _, shard := range ww.textShards {
@@ -107,10 +155,12 @@ func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 		collectionName := fmt.Sprintf("%s%d", ww.baseCollection, shardNumber)
 
 		err = ww.database.InsertDocumentInCollection(ctx, collectionName, doc)
+		opName = "insert_document"
 	} else {
 		// Standard mode - insert into default table
 		doc = ww.dataGenerator.GenerateDocument()
 		err = ww.database.InsertDocument(ctx, doc)
+		opName = "insert_document"
 	}
 
 	latency := time.Since(startTime)
@@ -123,7 +173,7 @@ func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 	if len(ww.operationLog) < cap(ww.operationLog) {
 		logEntry := OperationLog{
 			Timestamp: startTime,
-			Operation: "insert_document",
+			Operation: opName,
 			Latency:   latency,
 			Success:   success,
 		}
@@ -137,21 +187,113 @@ func (ww *WriteWorker) insertDocument(ctx context.Context) error {
 
 	// Log slow operations
 	if latency > 500*time.Millisecond {
-		titleField := doc.Title
-		if ww.isCostModelMode {
-			// In cost_model mode, use text1 field for logging
-			titleField = doc.Text1
-		}
-		if len(titleField) > 50 {
-			titleField = titleField[:50]
-		}
 		slog.Warn("Slow write operation detected",
 			"worker_id", ww.id,
-			"latency_ms", latency.Milliseconds(),
-			"document_preview", titleField)
+			"operation", opName,
+			"latency_ms", latency.Milliseconds())
 	}
 
 	return err
+}
+
+// executeWriteTestOp performs a single write test operation based on the current phase
+func (ww *WriteWorker) executeWriteTestOp(ctx context.Context) error {
+	switch ww.writeOp {
+	case "CREATE":
+		return ww.executeCreate(ctx)
+	case "UPDATE":
+		return ww.executeUpdate(ctx)
+	case "DELETE":
+		return ww.executeDelete(ctx)
+	default:
+		return fmt.Errorf("unknown write operation: %s", ww.writeOp)
+	}
+}
+
+// executeCreate generates a new document and upserts it into the write collection
+func (ww *WriteWorker) executeCreate(ctx context.Context) error {
+	// Generate a new ID
+	idBytes := generator.NextPreloadIdBytes(ww.writeRng, generator.KeySize, 1, 0)
+	id := generator.PreloadIdBytesToId(idBytes)
+
+	// Randomly select token size
+	tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
+
+	// Generate write document (create mode: update=false)
+	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, false)
+
+	// Upsert using ReplaceOne with upsert=true
+	err := ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)
+	if err != nil {
+		return fmt.Errorf("CREATE failed: %w", err)
+	}
+
+	// Track the ID for later UPDATE/DELETE phases
+	ww.preloadedIDsMu.Lock()
+	ww.preloadedIDs = append(ww.preloadedIDs, id)
+	ww.preloadedIDsMu.Unlock()
+
+	return nil
+}
+
+// executeUpdate selects a random existing ID and updates the document with reversed tokens
+func (ww *WriteWorker) executeUpdate(ctx context.Context) error {
+	ww.preloadedIDsMu.RLock()
+	numIDs := len(ww.preloadedIDs)
+	if numIDs == 0 {
+		ww.preloadedIDsMu.RUnlock()
+		// If no preloaded IDs, generate a new one (may not exist in DB, but upsert handles it)
+		idBytes := generator.NextPreloadIdBytes(ww.writeRng, generator.KeySize, 1, 0)
+		id := generator.PreloadIdBytesToId(idBytes)
+
+		tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
+		doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, true)
+		return ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)
+	}
+	// Select random ID from preloaded set
+	id := ww.preloadedIDs[ww.writeRng.Intn(numIDs)]
+	ww.preloadedIDsMu.RUnlock()
+
+	// Randomly select token size
+	tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
+
+	// Generate write document with reversed tokens (update mode: update=true)
+	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, true)
+
+	// Upsert using ReplaceOne with upsert=true
+	err := ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)
+	if err != nil {
+		return fmt.Errorf("UPDATE failed: %w", err)
+	}
+
+	return nil
+}
+
+// executeDelete selects a random existing ID and deletes the document
+func (ww *WriteWorker) executeDelete(ctx context.Context) error {
+	ww.preloadedIDsMu.Lock()
+	numIDs := len(ww.preloadedIDs)
+	if numIDs == 0 {
+		ww.preloadedIDsMu.Unlock()
+		// Nothing to delete - generate a random ID and attempt deletion anyway
+		idBytes := generator.NextPreloadIdBytes(ww.writeRng, generator.KeySize, 1, 0)
+		id := generator.PreloadIdBytesToId(idBytes)
+		return ww.database.DeleteDocumentInCollection(ctx, ww.writeCollection, id)
+	}
+
+	// Select random index and remove it from the list (swap with last, then shrink)
+	idx := ww.writeRng.Intn(numIDs)
+	id := ww.preloadedIDs[idx]
+	ww.preloadedIDs[idx] = ww.preloadedIDs[numIDs-1]
+	ww.preloadedIDs = ww.preloadedIDs[:numIDs-1]
+	ww.preloadedIDsMu.Unlock()
+
+	err := ww.database.DeleteDocumentInCollection(ctx, ww.writeCollection, id)
+	if err != nil {
+		return fmt.Errorf("DELETE failed: %w", err)
+	}
+
+	return nil
 }
 
 // InsertBatch performs batch document insertion for data seeding
@@ -234,6 +376,11 @@ func (ww *WriteWorker) GetStats() WriteWorkerStats {
 		avgLatency = totalLatency / time.Duration(totalOps)
 	}
 
+	successRate := 0.0
+	if totalOps > 0 {
+		successRate = float64(successfulOps) / float64(totalOps)
+	}
+
 	return WriteWorkerStats{
 		WorkerID:      ww.id,
 		TotalOps:      totalOps,
@@ -242,7 +389,7 @@ func (ww *WriteWorker) GetStats() WriteWorkerStats {
 		AvgLatency:    avgLatency,
 		SlowOps:       slowOps,
 		BatchOps:      batchOps,
-		SuccessRate:   float64(successfulOps) / float64(totalOps),
+		SuccessRate:   successRate,
 	}
 }
 

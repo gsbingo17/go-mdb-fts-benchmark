@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math/rand"
+	"sync"
 	"time"
 
 	"mongodb-benchmarking-tool/internal/config"
@@ -13,6 +15,7 @@ import (
 	"mongodb-benchmarking-tool/internal/worker"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
+	"golang.org/x/time/rate"
 )
 
 // BenchmarkRunner orchestrates the complete benchmarking process
@@ -150,13 +153,19 @@ func (br *BenchmarkRunner) Run(ctx context.Context) error {
 		return fmt.Errorf("database connection failed: %w", err)
 	}
 
-	// Phase 2: Setup data and indexes
-	if err := br.setupData(ctx); err != nil {
-		return fmt.Errorf("data setup failed: %w", err)
+	// Phase 2: Setup data and indexes (skip for write-only workloads)
+	if len(br.config.Workload.WriteOperations) > 0 {
+		slog.Info("Skipping data setup for write workload (write benchmark manages its own collection)")
+	} else {
+		if err := br.setupData(ctx); err != nil {
+			return fmt.Errorf("data setup failed: %w", err)
+		}
 	}
 
-	// Phase 3: Warmup period
-	if err := br.warmupPhase(ctx); err != nil {
+	// Phase 3: Warmup period (skip for write workloads)
+	if len(br.config.Workload.WriteOperations) > 0 {
+		slog.Info("Skipping warmup for write workload")
+	} else if err := br.warmupPhase(ctx); err != nil {
 		return fmt.Errorf("warmup failed: %w", err)
 	}
 
@@ -166,8 +175,14 @@ func (br *BenchmarkRunner) Run(ctx context.Context) error {
 	}
 
 	// Phase 5: Execute main benchmark
-	if err := br.executeBenchmark(ctx); err != nil {
-		return fmt.Errorf("benchmark execution failed: %w", err)
+	if len(br.config.Workload.WriteOperations) > 0 {
+		if err := br.executeWriteBenchmark(ctx); err != nil {
+			return fmt.Errorf("write benchmark execution failed: %w", err)
+		}
+	} else {
+		if err := br.executeBenchmark(ctx); err != nil {
+			return fmt.Errorf("benchmark execution failed: %w", err)
+		}
 	}
 
 	// Phase 6: Collect final results
@@ -567,9 +582,13 @@ func (br *BenchmarkRunner) startMonitoring(ctx context.Context) error {
 	slog.Info("Starting monitoring and control systems")
 
 	// Start saturation controller if available
-	if br.saturationController != nil {
+	// For write workloads, the saturation controller is started later inside executeWriteBenchmark
+	// (after preload completes) so it only monitors CPU during actual write phases
+	if br.saturationController != nil && len(br.config.Workload.WriteOperations) == 0 {
 		go br.saturationController.Start(ctx)
 		slog.Info("CPU saturation controller started")
+	} else if br.saturationController != nil && len(br.config.Workload.WriteOperations) > 0 {
+		slog.Info("Deferring CPU saturation controller start until write phases begin (after preload)")
 	}
 
 	// Start metrics export routine
@@ -1112,6 +1131,297 @@ func stringContains(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// executeWriteBenchmark runs the write benchmark with sequential phases (CREATE → UPDATE → DELETE)
+func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
+	writeOps := br.config.Workload.WriteOperations
+	phaseDuration := br.config.Workload.WritePhaseDuration
+	writeCollection := br.config.Workload.WriteCollection
+	writeTokens := br.config.Workload.WriteTokens
+	writeTokenSizes := br.config.Workload.WriteTokenSizes
+	workerCount := br.config.Workload.WorkerCount
+	targetQPS := br.config.Workload.TargetQPS
+
+	totalDuration := phaseDuration * time.Duration(len(writeOps))
+
+	datasetSize := br.config.Workload.DatasetSize
+
+	slog.Info("Starting write benchmark",
+		"phases", writeOps,
+		"phase_duration", phaseDuration,
+		"total_duration", totalDuration,
+		"collection", writeCollection,
+		"worker_count", workerCount,
+		"target_qps", targetQPS,
+		"write_tokens", writeTokens,
+		"write_token_sizes", writeTokenSizes,
+		"preload_count", datasetSize)
+
+	// Phase 0: SETUP - create table (Spanner), create search index, then preload documents
+
+	// Step 1: Create table (Spanner only) and search index
+	if br.config.Database.Type == "spanner" && br.spannerClient != nil {
+		// Spanner: create write-optimized table first
+		slog.Info("Creating Spanner write table for write collection", "table", writeCollection)
+		if err := br.spannerClient.CreateWriteTable(ctx, writeCollection); err != nil {
+			if !isTableAlreadyExistsError(err) {
+				return fmt.Errorf("failed to create Spanner write table %s: %w", writeCollection, err)
+			}
+			slog.Info("Write collection table already exists", "table", writeCollection)
+		}
+
+		// Spanner: create write-specific search index (text1_tokens only)
+		slog.Info("Creating Spanner write search index on write collection", "collection", writeCollection)
+		if err := br.spannerClient.CreateWriteSearchIndex(ctx, writeCollection); err != nil {
+			slog.Warn("Failed to create Spanner write search index on write collection (may already exist)",
+				"collection", writeCollection, "error", err)
+		}
+	} else {
+		// MongoDB/Atlas: create search index on write collection
+		slog.Info("Creating Atlas Search index on write collection", "collection", writeCollection)
+		if err := br.database.CreateSearchIndexForCollection(ctx, writeCollection); err != nil {
+			slog.Warn("Failed to create search index on write collection (may already exist)",
+				"collection", writeCollection, "error", err)
+		}
+	}
+
+	// Step 2: Preload dataset_size documents into write_collection so UPDATE/DELETE have data
+	var allIDs []string
+
+	if datasetSize > 0 {
+		slog.Info("Phase 0: Preloading documents into write collection",
+			"collection", writeCollection,
+			"count", datasetSize)
+
+		preloadRng := rand.New(rand.NewSource(time.Now().UnixNano()))
+		batchSize := 1000
+		preloadStart := time.Now()
+
+		for i := 0; i < datasetSize; i += batchSize {
+			remaining := datasetSize - i
+			if remaining > batchSize {
+				remaining = batchSize
+			}
+
+			for j := 0; j < remaining; j++ {
+				// Generate deterministic ID
+				idBytes := generator.NextPreloadIdBytes(preloadRng, generator.KeySize, 1, 0)
+				id := generator.PreloadIdBytesToId(idBytes)
+
+				// Randomly select token size
+				tokenSize := writeTokenSizes[preloadRng.Intn(len(writeTokenSizes))]
+
+				// Generate write document (create mode)
+				doc := generator.MakeDatabaseTextWriteDocument(id, writeTokens, tokenSize, false)
+
+				// Upsert into write collection
+				if err := br.database.ReplaceDocumentInCollection(ctx, writeCollection, id, doc); err != nil {
+					slog.Warn("Preload document failed", "id", id, "error", err)
+					continue
+				}
+
+				allIDs = append(allIDs, id)
+			}
+
+			if i%10000 == 0 && i > 0 {
+				slog.Info("Preload progress", "inserted", i, "total", datasetSize)
+			}
+		}
+
+		slog.Info("Phase 0: Preload completed",
+			"documents", len(allIDs),
+			"duration", time.Since(preloadStart))
+	}
+
+	// Reset metrics before starting write phases so preload/setup time doesn't affect QPS calculations
+	br.metricsCollector.Reset()
+
+	// Create a SHARED rate limiter for all write phases
+	// This allows the saturation controller to adjust QPS and have it carry over between phases
+	burst := targetQPS / 10
+	if burst < 1 {
+		burst = 1
+	}
+	sharedRateLimiter := rate.NewLimiter(rate.Limit(targetQPS), burst)
+
+	// Start saturation controller NOW (after preload, before write phases)
+	// This ensures CPU monitoring only covers actual write operations, not preload
+	if br.saturationController != nil {
+		// Override adjustment callback to directly adjust the shared write rate limiter
+		// (The default callback goes to workloadController which manages read workers — not write workers)
+		br.saturationController.SetAdjustmentCallback(func(adj metrics.WorkloadAdjustment) {
+			currentLimit := float64(sharedRateLimiter.Limit())
+			var newQPS float64
+			switch adj.Type {
+			case "qps_increase":
+				newQPS = currentLimit * (1 + adj.Magnitude/100)
+			case "qps_decrease":
+				newQPS = currentLimit * (1 - adj.Magnitude/100)
+				if newQPS < 10 {
+					newQPS = 10
+				}
+			default:
+				slog.Warn("Unknown adjustment type for write workload", "type", adj.Type)
+				return
+			}
+			newBurst := int(newQPS) / 10
+			if newBurst < 1 {
+				newBurst = 1
+			}
+			sharedRateLimiter.SetLimit(rate.Limit(newQPS))
+			sharedRateLimiter.SetBurst(newBurst)
+			slog.Info("Write workload QPS adjusted by saturation controller",
+				"type", adj.Type,
+				"old_qps", fmt.Sprintf("%.1f", currentLimit),
+				"new_qps", fmt.Sprintf("%.1f", newQPS),
+				"cpu", fmt.Sprintf("%.1f%%", adj.CurrentCPU),
+				"target_cpu", fmt.Sprintf("%.1f%%", adj.TargetCPU))
+		})
+
+		// Override measurement callback: do NOT reset metrics for write workloads
+		// Write metrics accumulate across all phases (CREATE → UPDATE → DELETE)
+		br.saturationController.SetMeasurementCallback(func(active bool) {
+			if active {
+				br.measurementStartTime = time.Now()
+				br.measurementActive = true
+				slog.Info("Saturation achieved stability during write workload - measurement tracking started (metrics NOT reset)")
+			} else {
+				br.measurementActive = false
+				br.measurementStartTime = time.Time{}
+				slog.Info("Saturation lost stability during write workload - measurement tracking stopped")
+			}
+		})
+
+		go br.saturationController.Start(ctx)
+		slog.Info("CPU saturation controller started for write workload (after preload)",
+			"initial_qps", targetQPS,
+			"target_cpu", br.config.Workload.SaturationTarget)
+	}
+
+	// Execute each write phase sequentially
+	for phaseIdx, op := range writeOps {
+		currentQPS := float64(sharedRateLimiter.Limit())
+		slog.Info("=== STARTING WRITE PHASE ===",
+			"phase", phaseIdx+1,
+			"operation", op,
+			"duration", phaseDuration,
+			"total_phases", len(writeOps),
+			"available_ids", len(allIDs),
+			"current_qps", fmt.Sprintf("%.1f", currentQPS))
+
+		// Create write workers for this phase
+		workers := make([]*worker.WriteWorker, workerCount)
+		workerWGs := make([]*sync.WaitGroup, workerCount)
+
+		phaseCtx, phaseCancel := context.WithTimeout(ctx, phaseDuration)
+
+		for i := 0; i < workerCount; i++ {
+			dataGen := generator.NewDataGenerator(time.Now().UnixNano() + int64(i) + int64(phaseIdx)*1000)
+			w := worker.NewWriteWorker(i, br.database, dataGen, br.metricsCollector, sharedRateLimiter)
+			w.SetWriteTestMode(writeTokens, writeTokenSizes, writeCollection)
+			w.SetWriteOp(op)
+
+			// Distribute existing IDs to workers for UPDATE/DELETE phases
+			if len(allIDs) > 0 {
+				workerIDs := distributeIDs(allIDs, workerCount, i)
+				w.SetPreloadedIDs(workerIDs)
+			}
+
+			workers[i] = w
+		}
+
+		// Start all workers
+		for i, w := range workers {
+			wg := &sync.WaitGroup{}
+			wg.Add(1)
+			workerWGs[i] = wg
+			go func(wk *worker.WriteWorker, wgp *sync.WaitGroup) {
+				defer wgp.Done()
+				wk.Start(phaseCtx)
+			}(w, wg)
+		}
+
+		// Monitor phase progress
+		ticker := time.NewTicker(30 * time.Second)
+		phaseStart := time.Now()
+
+	phaseLoop:
+		for {
+			select {
+			case <-phaseCtx.Done():
+				break phaseLoop
+			case <-ctx.Done():
+				phaseCancel()
+				ticker.Stop()
+				return ctx.Err()
+			case <-ticker.C:
+				elapsed := time.Since(phaseStart)
+				m := br.metricsCollector.GetCurrentMetrics()
+				slog.Info("Write phase progress",
+					"phase", op,
+					"elapsed", elapsed,
+					"total_ops", m.TotalOps,
+					"write_qps", fmt.Sprintf("%.1f", m.WriteQPS),
+					"error_rate", fmt.Sprintf("%.2f%%", m.ErrorRate*100))
+			}
+		}
+		ticker.Stop()
+
+		// Wait for all workers to finish
+		for _, wg := range workerWGs {
+			wg.Wait()
+		}
+
+		phaseCancel()
+
+		// Collect IDs from all workers for next phase
+		// During CREATE: workers accumulate newly created IDs
+		// During UPDATE: workers keep the same IDs (no change)
+		// During DELETE: workers remove IDs as they delete documents
+		allIDs = nil
+		for _, w := range workers {
+			workerIDs := w.GetPreloadedIDs()
+			allIDs = append(allIDs, workerIDs...)
+		}
+
+		elapsed := time.Since(phaseStart)
+		m := br.metricsCollector.GetCurrentMetrics()
+		slog.Info("=== WRITE PHASE COMPLETED ===",
+			"phase", phaseIdx+1,
+			"operation", op,
+			"duration", elapsed,
+			"remaining_ids", len(allIDs),
+			"total_ops", m.TotalOps,
+			"write_qps", fmt.Sprintf("%.1f", m.WriteQPS))
+	}
+
+	slog.Info("Write benchmark completed",
+		"total_phases", len(writeOps),
+		"remaining_ids", len(allIDs))
+
+	return nil
+}
+
+// distributeIDs splits a list of IDs across N workers, returning the portion for worker i
+func distributeIDs(ids []string, numWorkers, workerIdx int) []string {
+	if len(ids) == 0 || numWorkers <= 0 {
+		return nil
+	}
+
+	// Shuffle to randomize distribution
+	shuffled := make([]string, len(ids))
+	copy(shuffled, ids)
+	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rng.Shuffle(len(shuffled), func(i, j int) {
+		shuffled[i], shuffled[j] = shuffled[j], shuffled[i]
+	})
+
+	var result []string
+	for i := workerIdx; i < len(shuffled); i += numWorkers {
+		result = append(result, shuffled[i])
+	}
+	return result
 }
 
 // getIndexFieldsDescription returns a human-readable description of indexed fields for a given shard

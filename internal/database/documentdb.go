@@ -290,6 +290,26 @@ func (d *DocumentDBClient) InsertDocumentsInCollection(ctx context.Context, coll
 	return nil
 }
 
+// ReplaceDocument - write test not supported on DocumentDB
+func (d *DocumentDBClient) ReplaceDocument(ctx context.Context, id string, doc interface{}) error {
+	return fmt.Errorf("write test operations are not supported on AWS DocumentDB")
+}
+
+// ReplaceDocumentInCollection - write test not supported on DocumentDB
+func (d *DocumentDBClient) ReplaceDocumentInCollection(ctx context.Context, collectionName string, id string, doc interface{}) error {
+	return fmt.Errorf("write test operations are not supported on AWS DocumentDB")
+}
+
+// DeleteDocument - write test not supported on DocumentDB
+func (d *DocumentDBClient) DeleteDocument(ctx context.Context, id string) error {
+	return fmt.Errorf("write test operations are not supported on AWS DocumentDB")
+}
+
+// DeleteDocumentInCollection - write test not supported on DocumentDB
+func (d *DocumentDBClient) DeleteDocumentInCollection(ctx context.Context, collectionName string, id string) error {
+	return fmt.Errorf("write test operations are not supported on AWS DocumentDB")
+}
+
 // CountDocuments returns the number of documents in the collection
 func (d *DocumentDBClient) CountDocuments(ctx context.Context) (int64, error) {
 	count, err := d.collection.CountDocuments(ctx, bson.D{})
