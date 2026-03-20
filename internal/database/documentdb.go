@@ -404,6 +404,11 @@ func (d *DocumentDBClient) CreateSearchIndexForCollection(ctx context.Context, c
 	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
 }
 
+// CreateWriteSearchIndexForCollection - Atlas Search not supported on DocumentDB
+func (d *DocumentDBClient) CreateWriteSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB - use search_type: 'text' instead")
+}
+
 // DropSearchIndexes - Atlas Search not supported on DocumentDB
 func (d *DocumentDBClient) DropSearchIndexes(ctx context.Context) error {
 	return fmt.Errorf("Atlas Search is not supported on AWS DocumentDB")

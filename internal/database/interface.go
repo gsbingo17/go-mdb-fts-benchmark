@@ -51,6 +51,7 @@ type Database interface {
 	// Atlas Search index management
 	CreateSearchIndex(ctx context.Context) error
 	CreateSearchIndexForCollection(ctx context.Context, collectionName string) error
+	CreateWriteSearchIndexForCollection(ctx context.Context, collectionName string) error
 	DropSearchIndexes(ctx context.Context) error
 	DropSearchIndexesForCollection(ctx context.Context, collectionName string) error
 

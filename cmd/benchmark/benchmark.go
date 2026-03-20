@@ -1179,10 +1179,10 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 				"collection", writeCollection, "error", err)
 		}
 	} else {
-		// MongoDB/Atlas: create search index on write collection
-		slog.Info("Creating Atlas Search index on write collection", "collection", writeCollection)
-		if err := br.database.CreateSearchIndexForCollection(ctx, writeCollection); err != nil {
-			slog.Warn("Failed to create search index on write collection (may already exist)",
+		// MongoDB/Atlas: create write-specific search index on write collection (text1 only)
+		slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
+		if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
+			slog.Warn("Failed to create write search index on write collection (may already exist)",
 				"collection", writeCollection, "error", err)
 		}
 	}

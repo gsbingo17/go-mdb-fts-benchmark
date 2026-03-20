@@ -286,6 +286,12 @@ func (s *SpannerClient) CreateSearchIndex(ctx context.Context) error {
 	return s.CreateSearchIndexForTable(ctx, s.defaultTable, 1)
 }
 
+// CreateWriteSearchIndexForCollection creates a search index for write workloads.
+// For Spanner, this delegates to CreateWriteSearchIndex which indexes only text1_tokens.
+func (s *SpannerClient) CreateWriteSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	return s.CreateWriteSearchIndex(ctx, collectionName)
+}
+
 // CreateSearchIndexForCollection creates search index for a specific collection (table)
 // This is the interface method required for multi-shard support
 func (s *SpannerClient) CreateSearchIndexForCollection(ctx context.Context, collectionName string) error {

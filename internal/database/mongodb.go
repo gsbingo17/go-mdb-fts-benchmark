@@ -591,6 +591,38 @@ func (m *MongoDBClient) CreateSearchIndexForCollection(ctx context.Context, coll
 	return nil
 }
 
+// CreateWriteSearchIndexForCollection creates an Atlas Search index for write workloads.
+// Unlike CreateSearchIndexForCollection which indexes text1/text2/text3,
+// this only indexes text1 since write documents only contain text1.
+func (m *MongoDBClient) CreateWriteSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	coll := m.database.Collection(collectionName)
+
+	// Write workload index: only text1 (write documents only have text1)
+	indexDefinition := bson.D{
+		{Key: "mappings", Value: bson.D{
+			{Key: "dynamic", Value: false},
+			{Key: "fields", Value: bson.D{
+				{Key: "text1", Value: bson.D{
+					{Key: "type", Value: "string"},
+					{Key: "analyzer", Value: "lucene.standard"},
+				}},
+			}},
+		}},
+	}
+
+	searchIndexModel := mongo.SearchIndexModel{
+		Definition: indexDefinition,
+		Options:    options.SearchIndexes().SetName("default"),
+	}
+
+	_, err := coll.SearchIndexes().CreateOne(ctx, searchIndexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create Atlas Search write index for collection %s: %w", collectionName, err)
+	}
+
+	return nil
+}
+
 // DropSearchIndexes drops all Atlas Search indexes for default collection
 func (m *MongoDBClient) DropSearchIndexes(ctx context.Context) error {
 	return m.DropSearchIndexesForCollection(ctx, m.config.Collection)
