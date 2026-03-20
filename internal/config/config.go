@@ -276,6 +276,9 @@ func validate(config *Config) error {
 				return fmt.Errorf("workload.write_token_sizes[%d] must be positive, got %d", i, size)
 			}
 		}
+		if config.Workload.WriteNoindexSize < 0 {
+			return fmt.Errorf("workload.write_noindex_size must be non-negative, got %d", config.Workload.WriteNoindexSize)
+		}
 	}
 
 	// Cost validation

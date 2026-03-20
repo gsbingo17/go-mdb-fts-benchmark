@@ -1139,6 +1139,7 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 	phaseDuration := br.config.Workload.WritePhaseDuration
 	writeCollection := br.config.Workload.WriteCollection
 	writeTokens := br.config.Workload.WriteTokens
+	writeNoindexSize := br.config.Workload.WriteNoindexSize
 	writeTokenSizes := br.config.Workload.WriteTokenSizes
 	workerCount := br.config.Workload.WorkerCount
 	targetQPS := br.config.Workload.TargetQPS
@@ -1213,7 +1214,7 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 				tokenSize := writeTokenSizes[preloadRng.Intn(len(writeTokenSizes))]
 
 				// Generate write document (create mode)
-				doc := generator.MakeDatabaseTextWriteDocument(id, writeTokens, tokenSize, false)
+				doc := generator.MakeDatabaseTextWriteDocument(id, writeTokens, tokenSize, false, writeNoindexSize)
 
 				// Upsert into write collection
 				if err := br.database.ReplaceDocumentInCollection(ctx, writeCollection, id, doc); err != nil {
@@ -1319,7 +1320,7 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		for i := 0; i < workerCount; i++ {
 			dataGen := generator.NewDataGenerator(time.Now().UnixNano() + int64(i) + int64(phaseIdx)*1000)
 			w := worker.NewWriteWorker(i, br.database, dataGen, br.metricsCollector, sharedRateLimiter)
-			w.SetWriteTestMode(writeTokens, writeTokenSizes, writeCollection)
+			w.SetWriteTestMode(writeTokens, writeTokenSizes, writeCollection, writeNoindexSize)
 			w.SetWriteOp(op)
 
 			// Distribute existing IDs to workers for UPDATE/DELETE phases
