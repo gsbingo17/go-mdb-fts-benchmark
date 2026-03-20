@@ -1159,11 +1159,14 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		"write_token_sizes", writeTokenSizes,
 		"preload_count", datasetSize)
 
-	// Phase 0: SETUP - create table (Spanner), create search index, then preload documents
+	// Phase 0: SETUP - create table (Spanner), preload documents, then create search index
+	// NOTE: For MongoDB Atlas, the collection must exist before creating a search index.
+	// The preload step creates the collection by inserting documents, so search index
+	// creation is deferred to AFTER preload for MongoDB/Atlas.
 
-	// Step 1: Create table (Spanner only) and search index
+	// Step 1: Create table and search index (Spanner only - requires DDL before data)
 	if br.config.Database.Type == "spanner" && br.spannerClient != nil {
-		// Spanner: create write-optimized table first
+		// Spanner: create write-optimized table first (DDL required before inserts)
 		slog.Info("Creating Spanner write table for write collection", "table", writeCollection)
 		if err := br.spannerClient.CreateWriteTable(ctx, writeCollection); err != nil {
 			if !isTableAlreadyExistsError(err) {
@@ -1176,13 +1179,6 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		slog.Info("Creating Spanner write search index on write collection", "collection", writeCollection)
 		if err := br.spannerClient.CreateWriteSearchIndex(ctx, writeCollection); err != nil {
 			slog.Warn("Failed to create Spanner write search index on write collection (may already exist)",
-				"collection", writeCollection, "error", err)
-		}
-	} else {
-		// MongoDB/Atlas: create write-specific search index on write collection (text1 only)
-		slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
-		if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
-			slog.Warn("Failed to create write search index on write collection (may already exist)",
 				"collection", writeCollection, "error", err)
 		}
 	}
@@ -1233,6 +1229,17 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		slog.Info("Phase 0: Preload completed",
 			"documents", len(allIDs),
 			"duration", time.Since(preloadStart))
+	}
+
+	// Step 3: Create search index for MongoDB/Atlas AFTER preload
+	// Atlas Search requires the collection to exist before creating a search index.
+	// The preload step above creates the collection by inserting documents.
+	if br.config.Database.Type != "spanner" {
+		slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
+		if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
+			slog.Warn("Failed to create write search index on write collection (may already exist)",
+				"collection", writeCollection, "error", err)
+		}
 	}
 
 	// Reset metrics before starting write phases so preload/setup time doesn't affect QPS calculations
