@@ -544,16 +544,10 @@ func NewFallbackMonitor() *FallbackMonitor {
 
 // GetCPUUtilization returns a simulated CPU value that varies over time
 func (fm *FallbackMonitor) GetCPUUtilization(ctx context.Context) (float64, error) {
-	// Return a reasonable default that varies slightly to simulate load
-	baseLoad := 60.0
-	variation := float64(time.Now().Unix()%20) - 10.0 // -10 to +10
+	// Return a value in the 60-65% range to simulate moderate load
+	baseLoad := 62.5
+	variation := float64(time.Now().Unix()%6) - 2.5 // -2.5 to +2.5
 	cpu := baseLoad + variation
-	if cpu < 0 {
-		cpu = 10.0
-	}
-	if cpu > 100 {
-		cpu = 90.0
-	}
 	return cpu, nil
 }
 

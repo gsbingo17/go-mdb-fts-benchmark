@@ -32,14 +32,15 @@ type WriteWorker struct {
 	baseCollection  string // Base collection name for shard tables
 
 	// Write test mode configuration
-	isWriteTestMode bool
-	writeOp         string   // Current write operation: "CREATE", "UPDATE", "DELETE"
-	writeTokens     int      // Number of tokens per write document
-	writeTokenSizes []int    // Token sizes to randomly select from
-	writeCollection string   // Single collection for write tests
-	preloadedIDs    []string // Pre-generated IDs for write operations
-	preloadedIDsMu  sync.RWMutex
-	writeRng        *rand.Rand // RNG for write operations
+	isWriteTestMode  bool
+	writeOp          string   // Current write operation: "CREATE", "UPDATE", "DELETE"
+	writeTokens      int      // Number of tokens per write document
+	writeTokenSizes  []int    // Token sizes to randomly select from
+	writeCollection  string   // Single collection for write tests
+	writeNoindexSize int      // Size in bytes of non-indexed field (0 = disabled)
+	preloadedIDs     []string // Pre-generated IDs for write operations
+	preloadedIDsMu   sync.RWMutex
+	writeRng         *rand.Rand // RNG for write operations
 }
 
 // NewWriteWorker creates a new write worker
@@ -75,11 +76,12 @@ func (ww *WriteWorker) SetCostModelMode(enabled bool, textShards []int, workerCo
 }
 
 // SetWriteTestMode configures the worker for write test mode (CREATE/UPDATE/DELETE phases)
-func (ww *WriteWorker) SetWriteTestMode(writeTokens int, writeTokenSizes []int, writeCollection string) {
+func (ww *WriteWorker) SetWriteTestMode(writeTokens int, writeTokenSizes []int, writeCollection string, writeNoindexSize int) {
 	ww.isWriteTestMode = true
 	ww.writeTokens = writeTokens
 	ww.writeTokenSizes = writeTokenSizes
 	ww.writeCollection = writeCollection
+	ww.writeNoindexSize = writeNoindexSize
 }
 
 // SetWriteOp sets the current write operation phase (CREATE, UPDATE, DELETE)
@@ -220,7 +222,7 @@ func (ww *WriteWorker) executeCreate(ctx context.Context) error {
 	tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
 
 	// Generate write document (create mode: update=false)
-	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, false)
+	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, false, ww.writeNoindexSize)
 
 	// Upsert using ReplaceOne with upsert=true
 	err := ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)
@@ -247,7 +249,7 @@ func (ww *WriteWorker) executeUpdate(ctx context.Context) error {
 		id := generator.PreloadIdBytesToId(idBytes)
 
 		tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
-		doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, true)
+		doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, true, ww.writeNoindexSize)
 		return ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)
 	}
 	// Select random ID from preloaded set
@@ -258,7 +260,7 @@ func (ww *WriteWorker) executeUpdate(ctx context.Context) error {
 	tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
 
 	// Generate write document with reversed tokens (update mode: update=true)
-	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, true)
+	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, true, ww.writeNoindexSize)
 
 	// Upsert using ReplaceOne with upsert=true
 	err := ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)

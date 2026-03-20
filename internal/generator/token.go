@@ -282,6 +282,22 @@ func reverse(s string) string {
 	return string(r)
 }
 
+// MakeRandomBytes generates a deterministic string of random lowercase a-z characters
+// of the specified size, using the document ID as seed for reproducibility.
+func MakeRandomBytes(id string, size int) string {
+	if size <= 0 {
+		return ""
+	}
+	seed := hashStringToInt64(id + "_noindex")
+	rng := rand.New(rand.NewSource(seed))
+
+	buf := make([]byte, size)
+	for i := 0; i < size; i++ {
+		buf[i] = byte('a' + rng.Intn(26))
+	}
+	return string(buf)
+}
+
 // MakeDatabaseTextWriteDocument generates a BSON document for text search write tests.
 // The document content is deterministic based on the ID hash, ensuring reproducibility.
 //
@@ -289,9 +305,10 @@ func reverse(s string) string {
 // tokens: The number of tokens in the text field.
 // tokenSize: The size (character length) of each token.
 // update: If true, reverses every second token to simulate an update.
+// noindexSize: Size in bytes of the non-indexed field (0 = no non-indexed field).
 //
-// Returns a map with "_id" and "text1" fields (only text1 is written, matching reference).
-func MakeDatabaseTextWriteDocument(id string, tokens, tokenSize int, update bool) map[string]interface{} {
+// Returns a map with "_id", "text1", and optionally "text_noindex" fields.
+func MakeDatabaseTextWriteDocument(id string, tokens, tokenSize int, update bool, noindexSize int) map[string]interface{} {
 	doc := map[string]interface{}{
 		"_id": id,
 	}
@@ -322,5 +339,11 @@ func MakeDatabaseTextWriteDocument(id string, tokens, tokenSize int, update bool
 	}
 
 	doc[DatabaseSearchFields[0]] = fieldValue.String()
+
+	// Generate non-indexed field if requested (simple random a-z bytes)
+	if noindexSize > 0 {
+		doc["text_noindex"] = MakeRandomBytes(id, noindexSize)
+	}
+
 	return doc
 }

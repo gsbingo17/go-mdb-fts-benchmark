@@ -190,6 +190,7 @@ func (s *SpannerClient) CreateWriteTable(ctx context.Context, tableName string) 
 		CREATE TABLE %s (
 			id STRING(MAX) NOT NULL,
 			text1 STRING(MAX),
+			text_noindex STRING(MAX),
 			text1_tokens TOKENLIST AS (TOKENIZE_FULLTEXT(text1)) HIDDEN
 		) PRIMARY KEY (id)
 	`, tableName)
@@ -800,6 +801,15 @@ func (s *SpannerClient) ReplaceDocumentInCollection(ctx context.Context, tableNa
 
 	if v, exists := docMap["text3"]; exists {
 		columns = append(columns, "text3")
+		if str, ok := v.(string); ok {
+			values = append(values, str)
+		} else {
+			values = append(values, "")
+		}
+	}
+
+	if v, exists := docMap["text_noindex"]; exists {
+		columns = append(columns, "text_noindex")
 		if str, ok := v.(string); ok {
 			values = append(values, str)
 		} else {

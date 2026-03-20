@@ -79,6 +79,14 @@ func (sc *SaturationController) SetMeasurementCallback(callback func(active bool
 	sc.measurementCallback = callback
 }
 
+// SetAdjustmentCallback sets the callback for workload adjustments
+// This allows redirecting QPS adjustments to different targets (e.g., write rate limiter)
+func (sc *SaturationController) SetAdjustmentCallback(callback func(WorkloadAdjustment)) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	sc.adjustmentCallback = callback
+}
+
 // Start begins monitoring and adjustment loop
 func (sc *SaturationController) Start(ctx context.Context) {
 	ticker := time.NewTicker(60 * time.Second) // Check every 60 seconds (increased from 30s)
