@@ -67,6 +67,7 @@ type WorkloadConfig struct {
 	WriteTokenSizes    []int         `yaml:"write_token_sizes"`    // Token sizes to randomly select from [50, 100, 200, 1000]
 	WriteCollection    string        `yaml:"write_collection"`     // Single collection for writes (default: "DatabaseSearchWords")
 	WriteNoindexSize   int           `yaml:"write_noindex_size"`   // Size in bytes of non-indexed field (0 = disabled)
+	WriteSearchIndex   *bool         `yaml:"write_search_index"`   // Whether to create FTS index on write collection (default: true)
 }
 
 // GeoDistanceVariant defines a geospatial query distance filter configuration

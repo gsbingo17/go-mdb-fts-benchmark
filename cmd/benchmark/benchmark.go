@@ -1157,6 +1157,7 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		"target_qps", targetQPS,
 		"write_tokens", writeTokens,
 		"write_token_sizes", writeTokenSizes,
+		"write_search_index", *br.config.Workload.WriteSearchIndex,
 		"preload_count", datasetSize)
 
 	// Phase 0: SETUP - create table (Spanner), preload documents, then create search index
@@ -1176,10 +1177,14 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		}
 
 		// Spanner: create write-specific search index (text1_tokens only)
-		slog.Info("Creating Spanner write search index on write collection", "collection", writeCollection)
-		if err := br.spannerClient.CreateWriteSearchIndex(ctx, writeCollection); err != nil {
-			slog.Warn("Failed to create Spanner write search index on write collection (may already exist)",
-				"collection", writeCollection, "error", err)
+		if *br.config.Workload.WriteSearchIndex {
+			slog.Info("Creating Spanner write search index on write collection", "collection", writeCollection)
+			if err := br.spannerClient.CreateWriteSearchIndex(ctx, writeCollection); err != nil {
+				slog.Warn("Failed to create Spanner write search index on write collection (may already exist)",
+					"collection", writeCollection, "error", err)
+			}
+		} else {
+			slog.Info("Skipping Spanner write search index creation (write_search_index=false)", "collection", writeCollection)
 		}
 	}
 
@@ -1235,10 +1240,14 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 	// Atlas Search requires the collection to exist before creating a search index.
 	// The preload step above creates the collection by inserting documents.
 	if br.config.Database.Type != "spanner" {
-		slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
-		if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
-			slog.Warn("Failed to create write search index on write collection (may already exist)",
-				"collection", writeCollection, "error", err)
+		if *br.config.Workload.WriteSearchIndex {
+			slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
+			if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
+				slog.Warn("Failed to create write search index on write collection (may already exist)",
+					"collection", writeCollection, "error", err)
+			}
+		} else {
+			slog.Info("Skipping Atlas Search write index creation (write_search_index=false)", "collection", writeCollection)
 		}
 	}
 

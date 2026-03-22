@@ -123,6 +123,10 @@ func applyDefaults(config *Config) error {
 				config.Workload.WriteCollection = "DatabaseSearchWords"
 			}
 		}
+		if config.Workload.WriteSearchIndex == nil {
+			defaultTrue := true
+			config.Workload.WriteSearchIndex = &defaultTrue
+		}
 	}
 
 	// Metrics defaults
