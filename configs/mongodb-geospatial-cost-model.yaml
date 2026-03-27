@@ -1,0 +1,79 @@
+# MongoDB Geospatial Search Cost Model Configuration
+# This configuration demonstrates multi-dimensional geospatial query testing
+
+database:
+  type: "mongodb"
+  uri: "mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000"
+  database: "geo_cost_model"
+  collection: "geo"  # SINGLE collection for all geospatial documents (no sharding for geo)
+  max_pool_size: 100
+  min_pool_size: 10
+  max_conn_idle_time: 120
+  connect_timeout_ms: 30000
+  socket_timeout_ms: 300000
+
+workload:
+  # Cost model mode for multi-dimensional testing
+  mode: "cost_model"
+  search_type: "geospatial_search"
+  
+  # Geospatial query parameters (matches reference: [10, 50, 100])
+  geo_query_limits: [10, 50, 100]
+  
+  # Distance filter variants (4 combinations to test)
+  geo_distance_variants:
+    - type: "none"
+      min_distance: false
+      max_distance: false
+    - type: "min"
+      min_distance: true
+      max_distance: false
+    - type: "max"
+      min_distance: false
+      max_distance: true
+    - type: "both"
+      min_distance: true
+      max_distance: true
+  
+  # Read/Write ratio
+  read_write_ratio:
+    read_percent: 100
+    write_percent: 0
+  
+  # Workload parameters
+  duration: 15m
+  target_qps: 50
+  worker_count: 10
+  dataset_size: 50000
+  
+  # Saturation testing
+  saturation_target: 80.0
+  warmup_duration: 1m
+  stability_window: 3m
+  adjustment_cooldown: 30s
+  
+  # Not used for geospatial, but required by config
+  # query_result_limit: 100
+  
+  # Geospatial data generation seed (0 = random using timestamp, or set a fixed value for reproducibility)
+  geo_seed: 978543897534
+
+metrics:
+  collection_interval: 1s
+  export_interval: 60s
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+cost:
+  provider: "atlas"
+  currency_code: "USD"
+  calculation_mode: "estimate"
+  atlas:
+    public_key: "a"
+    private_key: "a"
+    group_id: "a"
+    cluster_name: "a"
+    hourly_cost: 0.08
+    storage_cost_per_gb: 0.25
