@@ -41,6 +41,10 @@ type WriteWorker struct {
 	preloadedIDs     []string // Pre-generated IDs for write operations
 	preloadedIDsMu   sync.RWMutex
 	writeRng         *rand.Rand // RNG for write operations
+
+	// Geospatial write mode configuration
+	isGeoWriteMode bool
+	geoGenerator   *generator.GeoGenerator
 }
 
 // NewWriteWorker creates a new write worker
@@ -82,6 +86,15 @@ func (ww *WriteWorker) SetWriteTestMode(writeTokens int, writeTokenSizes []int, 
 	ww.writeTokenSizes = writeTokenSizes
 	ww.writeCollection = writeCollection
 	ww.writeNoindexSize = writeNoindexSize
+}
+
+// SetGeoWriteMode configures the worker for geospatial write mode.
+// Uses the existing GeoGenerator.GenerateGeoDocument() for document creation.
+func (ww *WriteWorker) SetGeoWriteMode(geoGen *generator.GeoGenerator, writeCollection string) {
+	ww.isWriteTestMode = true
+	ww.isGeoWriteMode = true
+	ww.geoGenerator = geoGen
+	ww.writeCollection = writeCollection
 }
 
 // SetWriteOp sets the current write operation phase (CREATE, UPDATE, DELETE)
@@ -218,11 +231,16 @@ func (ww *WriteWorker) executeCreate(ctx context.Context) error {
 	idBytes := generator.NextPreloadIdBytes(ww.writeRng, generator.KeySize, 1, 0)
 	id := generator.PreloadIdBytesToId(idBytes)
 
-	// Randomly select token size
-	tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
+	var doc interface{}
 
-	// Generate write document (create mode: update=false)
-	doc := generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, false, ww.writeNoindexSize)
+	if ww.isGeoWriteMode {
+		// Geospatial write mode: generate geo document using existing GeoGenerator
+		doc = ww.geoGenerator.GenerateGeoDocument(id)
+	} else {
+		// Text write mode: generate text document with tokens
+		tokenSize := ww.writeTokenSizes[ww.writeRng.Intn(len(ww.writeTokenSizes))]
+		doc = generator.MakeDatabaseTextWriteDocument(id, ww.writeTokens, tokenSize, false, ww.writeNoindexSize)
+	}
 
 	// Upsert using ReplaceOne with upsert=true
 	err := ww.database.ReplaceDocumentInCollection(ctx, ww.writeCollection, id, doc)

@@ -1148,6 +1148,24 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 
 	datasetSize := br.config.Workload.DatasetSize
 
+	// Determine search type for write workload (affects document format and index type)
+	searchType := br.config.Workload.SearchType
+	if searchType == "" {
+		searchType = "atlas_search" // Default for write workloads
+	}
+	isGeoWrite := searchType == "geospatial_search"
+
+	// Create geo generator if geospatial write mode
+	var geoGen *generator.GeoGenerator
+	if isGeoWrite {
+		geoSeed := br.config.Workload.GeoSeed
+		if geoSeed == 0 {
+			geoSeed = time.Now().UnixNano()
+		}
+		geoGen = generator.NewGeoGenerator(geoSeed)
+		slog.Info("Geospatial write mode enabled", "seed", geoSeed, "reproducible", br.config.Workload.GeoSeed != 0)
+	}
+
 	slog.Info("Starting write benchmark",
 		"phases", writeOps,
 		"phase_duration", phaseDuration,
@@ -1155,6 +1173,8 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		"collection", writeCollection,
 		"worker_count", workerCount,
 		"target_qps", targetQPS,
+		"search_type", searchType,
+		"is_geo_write", isGeoWrite,
 		"write_tokens", writeTokens,
 		"write_token_sizes", writeTokenSizes,
 		"write_search_index", *br.config.Workload.WriteSearchIndex,
@@ -1211,11 +1231,15 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 				idBytes := generator.NextPreloadIdBytes(preloadRng, generator.KeySize, 1, 0)
 				id := generator.PreloadIdBytesToId(idBytes)
 
-				// Randomly select token size
-				tokenSize := writeTokenSizes[preloadRng.Intn(len(writeTokenSizes))]
-
-				// Generate write document (create mode)
-				doc := generator.MakeDatabaseTextWriteDocument(id, writeTokens, tokenSize, false, writeNoindexSize)
+				var doc interface{}
+				if isGeoWrite {
+					// Geospatial write: generate geo document using GeoGenerator
+					doc = geoGen.GenerateGeoDocument(id)
+				} else {
+					// Text write: generate text document with tokens
+					tokenSize := writeTokenSizes[preloadRng.Intn(len(writeTokenSizes))]
+					doc = generator.MakeDatabaseTextWriteDocument(id, writeTokens, tokenSize, false, writeNoindexSize)
+				}
 
 				// Upsert into write collection
 				if err := br.database.ReplaceDocumentInCollection(ctx, writeCollection, id, doc); err != nil {
@@ -1241,13 +1265,27 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 	// The preload step above creates the collection by inserting documents.
 	if br.config.Database.Type != "spanner" {
 		if *br.config.Workload.WriteSearchIndex {
-			slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
-			if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
-				slog.Warn("Failed to create write search index on write collection (may already exist)",
-					"collection", writeCollection, "error", err)
+			if isGeoWrite {
+				// Geospatial write: create 2dsphere index on "location" field
+				slog.Info("Creating 2dsphere geospatial index on write collection", "collection", writeCollection, "field", "location")
+				if err := br.database.CreateGeoIndexForCollection(ctx, writeCollection, "location"); err != nil {
+					slog.Warn("Failed to create 2dsphere index on write collection (may already exist)",
+						"collection", writeCollection, "error", err)
+				}
+			} else {
+				// Text write: create Atlas Search index on text1 field
+				slog.Info("Creating Atlas Search write index on write collection (text1 only)", "collection", writeCollection)
+				if err := br.database.CreateWriteSearchIndexForCollection(ctx, writeCollection); err != nil {
+					slog.Warn("Failed to create write search index on write collection (may already exist)",
+						"collection", writeCollection, "error", err)
+				}
 			}
 		} else {
-			slog.Info("Skipping Atlas Search write index creation (write_search_index=false)", "collection", writeCollection)
+			if isGeoWrite {
+				slog.Info("Skipping 2dsphere index creation (write_search_index=false)", "collection", writeCollection)
+			} else {
+				slog.Info("Skipping Atlas Search write index creation (write_search_index=false)", "collection", writeCollection)
+			}
 		}
 	}
 
@@ -1336,7 +1374,13 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 		for i := 0; i < workerCount; i++ {
 			dataGen := generator.NewDataGenerator(time.Now().UnixNano() + int64(i) + int64(phaseIdx)*1000)
 			w := worker.NewWriteWorker(i, br.database, dataGen, br.metricsCollector, sharedRateLimiter)
-			w.SetWriteTestMode(writeTokens, writeTokenSizes, writeCollection, writeNoindexSize)
+			if isGeoWrite {
+				// Geospatial write mode: use GeoGenerator for document creation
+				w.SetGeoWriteMode(geoGen, writeCollection)
+			} else {
+				// Text write mode: use token-based document creation
+				w.SetWriteTestMode(writeTokens, writeTokenSizes, writeCollection, writeNoindexSize)
+			}
 			w.SetWriteOp(op)
 
 			// Distribute existing IDs to workers for UPDATE/DELETE phases

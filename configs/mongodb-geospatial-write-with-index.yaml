@@ -1,0 +1,94 @@
+# MongoDB Geospatial Write Benchmark Configuration (WITH 2dsphere Index)
+# This configuration benchmarks write operations (CREATE only) for geospatial
+# documents against MongoDB with a 2dsphere index on the "location" field.
+#
+# Phase flow: CREATE (10m) = 10 minutes total
+# - CREATE: generates new geospatial documents with random GeoJSON Point locations
+#
+# A 2dsphere index is created on the write collection before benchmarking
+# (write_search_index: true).
+# Documents use the same format as geospatial data seeding:
+#   { "_id": "<base64url>", "location": { "type": "Point", "coordinates": [lng, lat] } }
+
+database:
+  type: "mongodb"
+  uri: "mongodb://127.0.0.1:27017/?directConnection=true&serverSelectionTimeoutMS=2000"
+  database: "geo_cost_model"
+  collection: "geo_write"
+  max_pool_size: 100
+  min_pool_size: 10
+  max_conn_idle_time: 300
+  connect_timeout_ms: 30000
+  socket_timeout_ms: 60000
+
+workload:
+  # Workload mode and search type
+  mode: "cost_model"
+  search_type: "geospatial_search"
+
+  # Write-only workload (no reads during write benchmark)
+  read_write_ratio:
+    read_percent: 0
+    write_percent: 100
+
+  # Overall benchmark duration (should be >= sum of all write phases)
+  duration: 15m
+  target_qps: 100
+  worker_count: 10
+  dataset_size: 100000
+
+  # CPU saturation
+  saturation_target: 70.0
+  warmup_duration: 0s
+  stability_window: 3m
+
+  # Write workload configuration
+  # Only CREATE phase for geospatial writes
+  write_operations: ["CREATE"]
+  write_phase_duration: 10m
+  write_search_index: true              # CREATE 2dsphere index on write collection
+  write_collection: "geo_write"         # Single collection for geospatial writes
+
+  # Token settings (not used for geo writes, but required by config validation)
+  write_tokens: 1
+  write_token_sizes: [1]
+  write_noindex_size: 0
+
+  # Geospatial data generation seed (0 = random, fixed value = reproducible)
+  geo_seed: 978543897534
+
+metrics:
+  collection_interval: 10s
+  export_interval: 60s
+  export_format: "json"
+  export_path: "./metrics"
+  enable_prometheus: false
+  prometheus_port: 9090
+
+cost:
+  provider: "atlas"
+  currency_code: "USD"
+  calculation_mode: "estimate"
+  atlas:
+    public_key: "${ATLAS_PUBLIC_KEY}"
+    private_key: "${ATLAS_PRIVATE_KEY}"
+    group_id: "${ATLAS_GROUP_ID}"
+    cluster_name: "${ATLAS_CLUSTER_NAME}"
+    hourly_cost: 0.08
+    storage_cost_per_gb: 0.25
+
+# Notes:
+# 1. Write Operations:
+#    - CREATE: Uses GeoGenerator.GenerateGeoDocument(id) to create GeoJSON Point documents
+#    - Documents are upserted via ReplaceOne with upsert=true
+#
+# 2. Document Format:
+#    - { "_id": "<base64url_id>", "location": { "type": "Point", "coordinates": [lng, lat] } }
+#    - Coordinates are randomly generated within valid ranges
+#
+# 3. 2dsphere Index:
+#    - Created on "location" field BEFORE write phases begin
+#    - This measures write performance WITH index maintenance overhead
+#
+# 4. Comparison:
+#    - Use mongodb-geospatial-write-without-index.yaml to compare writes WITHOUT index
