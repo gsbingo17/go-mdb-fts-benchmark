@@ -29,7 +29,7 @@ type ReadWorker struct {
 	geoGenerator    *generator.GeoGenerator   // Geospatial query generator
 
 	// Search type configuration
-	searchType string // "text", "atlas_search", or "geospatial_search"
+	searchType string // "text", "atlas_search", "geospatial_search", or "atlas_geo_search"
 }
 
 // OperationLog tracks individual operations for analysis
@@ -120,9 +120,22 @@ func (rw *ReadWorker) executeTextSearch(ctx context.Context) error {
 	var limit int
 
 	if rw.isCostModelMode {
-		// Handle geospatial search separately
-		if rw.searchType == "geospatial_search" && rw.geoGenerator != nil {
-			// Use GeoQueryRequest/GeoQueryResult pattern for geospatial queries
+		// Handle geospatial search types separately
+		if rw.searchType == "atlas_geo_search" && rw.geoGenerator != nil {
+			// Use Atlas Search $geoWithin pipeline for geospatial queries
+			geoResult := rw.workloadGen.GenerateAtlasGeoSearchQueryRequest(rw.geoQueryRequest, rw.geoGenerator)
+
+			resultCount, err = rw.database.ExecuteAtlasGeoSearchPipelineInCollection(
+				ctx,
+				geoResult.CollectionName,
+				geoResult.RawQuery, // bson.A pipeline
+			)
+			query = geoResult.Query
+			collectionName = geoResult.CollectionName
+			textShard = geoResult.SelectedTextShard
+			limit = geoResult.Limit
+		} else if rw.searchType == "geospatial_search" && rw.geoGenerator != nil {
+			// Use $nearSphere find query for geospatial queries
 			geoResult := rw.workloadGen.GenerateGeoQueryRequest(rw.geoQueryRequest, rw.geoGenerator)
 
 			resultCount, err = rw.database.ExecuteGeoSearchInCollection(

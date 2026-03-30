@@ -132,6 +132,44 @@ func (m *MongoDBClient) CreateTokenTextIndex(ctx context.Context) error {
 	return nil
 }
 
+// CreateAtlasGeoSearchIndex creates an Atlas Search index with geo type mapping on the default collection
+func (m *MongoDBClient) CreateAtlasGeoSearchIndex(ctx context.Context) error {
+	return m.CreateAtlasGeoSearchIndexForCollection(ctx, m.config.Collection)
+}
+
+// CreateAtlasGeoSearchIndexForCollection creates an Atlas Search index with geo type mapping
+// for geospatial queries using $search with geoWithin operator
+func (m *MongoDBClient) CreateAtlasGeoSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	coll := m.database.Collection(collectionName)
+
+	// Atlas Search index definition with geo type mapping on "location" field
+	indexDefinition := bson.D{
+		{Key: "mappings", Value: bson.D{
+			{Key: "dynamic", Value: false},
+			{Key: "fields", Value: bson.D{
+				{Key: "location", Value: bson.D{
+					{Key: "type", Value: "geo"},
+				}},
+			}},
+		}},
+	}
+
+	searchIndexModel := mongo.SearchIndexModel{
+		Definition: indexDefinition,
+		Options:    options.SearchIndexes().SetName("default"),
+	}
+
+	slog.Info("Creating Atlas Search geo index", "collection", collectionName, "field", "location", "type", "geo")
+
+	_, err := coll.SearchIndexes().CreateOne(ctx, searchIndexModel)
+	if err != nil {
+		return fmt.Errorf("failed to create Atlas Search geo index on %s: %w", collectionName, err)
+	}
+
+	slog.Info("Atlas Search geo index created successfully", "collection", collectionName)
+	return nil
+}
+
 // CreateGeoIndex creates a 2dsphere index on the specified field for the default collection
 func (m *MongoDBClient) CreateGeoIndex(ctx context.Context, fieldName string) error {
 	indexModel := mongo.IndexModel{
@@ -654,6 +692,44 @@ func (m *MongoDBClient) DropSearchIndexesForCollection(ctx context.Context, coll
 	}
 
 	return nil
+}
+
+// ExecuteAtlasGeoSearchPipeline performs Atlas Search geo pipeline on default collection
+func (m *MongoDBClient) ExecuteAtlasGeoSearchPipeline(ctx context.Context, pipeline interface{}) (int, error) {
+	return m.ExecuteAtlasGeoSearchPipelineInCollection(ctx, m.config.Collection, pipeline)
+}
+
+// ExecuteAtlasGeoSearchPipelineInCollection performs Atlas Search geo pipeline on a specific collection
+// The pipeline is expected to be a bson.A containing $search and $limit stages
+func (m *MongoDBClient) ExecuteAtlasGeoSearchPipelineInCollection(ctx context.Context, collectionName string, pipeline interface{}) (int, error) {
+	coll := m.database.Collection(collectionName)
+
+	startTime := time.Now()
+
+	cursor, err := coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return 0, fmt.Errorf("Atlas Search geo pipeline failed in collection %s: %w", collectionName, err)
+	}
+	defer cursor.Close(ctx)
+
+	count := 0
+	for cursor.Next(ctx) {
+		count++
+	}
+
+	if err := cursor.Err(); err != nil {
+		return 0, fmt.Errorf("cursor error: %w", err)
+	}
+
+	latency := time.Since(startTime)
+
+	slog.Debug("Atlas Search geo pipeline",
+		"collection", collectionName,
+		"result_count", count,
+		"latency_us", latency.Microseconds(),
+		"latency", latency.String())
+
+	return count, nil
 }
 
 // ExecuteAtlasSearch performs Atlas Search on default collection

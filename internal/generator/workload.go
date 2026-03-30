@@ -431,3 +431,37 @@ func (wg *WorkloadGenerator) GenerateGeoQueryRequest(req GeoQueryRequest, geoGen
 		DistanceVariant:   variant,
 	}
 }
+
+// GenerateAtlasGeoSearchQueryRequest generates a complete Atlas Search geo pipeline query
+// with randomly selected parameters. Uses $search with geoWithin operator instead of $nearSphere.
+// CRITICAL: Like geospatial_search, atlas_geo_search uses a SINGLE base collection.
+func (wg *WorkloadGenerator) GenerateAtlasGeoSearchQueryRequest(req GeoQueryRequest, geoGen *GeoGenerator) GeoQueryResult {
+	// Step 1: Randomly select distance variant
+	variant := req.GeoDistanceVariants[wg.rng.Intn(len(req.GeoDistanceVariants))]
+
+	// Step 2: Randomly select limit
+	limit := req.Limits[wg.rng.Intn(len(req.Limits))]
+
+	// Step 3: Generate Atlas Search geo pipeline (bson.A with $search + $limit stages)
+	params := GeoQueryParams{
+		WithMinDistance: variant.MinDistance,
+		WithMaxDistance: variant.MaxDistance,
+		Limit:           limit,
+	}
+	pipeline := geoGen.GenerateAtlasGeoSearchPipeline(params)
+
+	// Step 4: Convert query description to string for logging
+	queryDesc := geoGen.FormatGeoQuery(params)
+
+	// Step 5: ALWAYS use base collection name (no sharding for geospatial)
+	collectionName := req.BaseCollectionName
+
+	return GeoQueryResult{
+		Query:             queryDesc,
+		RawQuery:          pipeline, // bson.A pipeline instead of bson.M find query
+		CollectionName:    collectionName,
+		Limit:             limit,
+		SelectedTextShard: 0, // Not applicable for geo - always 0
+		DistanceVariant:   variant,
+	}
+}

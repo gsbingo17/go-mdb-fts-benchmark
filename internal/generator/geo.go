@@ -36,6 +36,9 @@ const (
 	SearchMinGeoDistanceMeters = 1
 	SearchMaxGeoDistanceMeters = 1_000_000 // 1000 km
 
+	// Atlas Search geoWithin max radius for "none" and "min only" variants
+	AtlasGeoSearchMaxRadiusMeters = 10_000_000 // 10,000 km
+
 	// Safety margins for distance calculations
 	DistanceSafetyMargin = 0.08 * (SearchMaxGeoDistanceMeters - SearchMinGeoDistanceMeters)
 	RandomMinDistance    = SearchMinGeoDistanceMeters + DistanceSafetyMargin
@@ -162,6 +165,111 @@ func (g *GeoGenerator) GenerateGeoQuery(params GeoQueryParams) bson.M {
 	return bson.M{
 		"location": bson.M{"$nearSphere": nearSphereFilter},
 	}
+}
+
+// GenerateAtlasGeoSearchPipeline creates an Atlas Search aggregation pipeline using $geoWithin
+// with circle geometry. For minDistance variants, uses compound must/mustNot to create a ring shape.
+// The pipeline includes $search and $limit stages.
+func (g *GeoGenerator) GenerateAtlasGeoSearchPipeline(params GeoQueryParams) bson.A {
+	// Pick a random city as the query center
+	city := Cities[g.rand.Intn(len(Cities))]
+	centerGeoJSON := city.ToGeoJSON()
+
+	var searchStage bson.D
+
+	if params.WithMinDistance && params.WithMaxDistance {
+		// Both min and max: compound must(maxDistance circle) + mustNot(minDistance circle) = ring
+		minMaxDifference := MinMaxDifferenceLowerBound +
+			g.rand.Float64()*(MinMaxDifferenceUpperBound-MinMaxDifferenceLowerBound)
+		minDist := RandomMinDistance +
+			g.rand.Float64()*(RandomMaxDistance-minMaxDifference-RandomMinDistance)
+		maxDist := minDist + minMaxDifference
+
+		searchStage = bson.D{{Key: "$search", Value: bson.D{
+			{Key: "index", Value: "default"},
+			{Key: "compound", Value: bson.D{
+				{Key: "must", Value: bson.A{
+					bson.D{{Key: "geoWithin", Value: bson.D{
+						{Key: "path", Value: "location"},
+						{Key: "circle", Value: bson.D{
+							{Key: "center", Value: centerGeoJSON},
+							{Key: "radius", Value: maxDist},
+						}},
+					}}},
+				}},
+				{Key: "mustNot", Value: bson.A{
+					bson.D{{Key: "geoWithin", Value: bson.D{
+						{Key: "path", Value: "location"},
+						{Key: "circle", Value: bson.D{
+							{Key: "center", Value: centerGeoJSON},
+							{Key: "radius", Value: minDist},
+						}},
+					}}},
+				}},
+			}},
+		}}}
+	} else if params.WithMinDistance {
+		// Min only: compound must(10000km circle) + mustNot(minDistance circle)
+		minDist := RandomMinDistance + g.rand.Float64()*(RandomMaxDistance-RandomMinDistance)
+
+		searchStage = bson.D{{Key: "$search", Value: bson.D{
+			{Key: "index", Value: "default"},
+			{Key: "compound", Value: bson.D{
+				{Key: "must", Value: bson.A{
+					bson.D{{Key: "geoWithin", Value: bson.D{
+						{Key: "path", Value: "location"},
+						{Key: "circle", Value: bson.D{
+							{Key: "center", Value: centerGeoJSON},
+							{Key: "radius", Value: float64(AtlasGeoSearchMaxRadiusMeters)},
+						}},
+					}}},
+				}},
+				{Key: "mustNot", Value: bson.A{
+					bson.D{{Key: "geoWithin", Value: bson.D{
+						{Key: "path", Value: "location"},
+						{Key: "circle", Value: bson.D{
+							{Key: "center", Value: centerGeoJSON},
+							{Key: "radius", Value: minDist},
+						}},
+					}}},
+				}},
+			}},
+		}}}
+	} else if params.WithMaxDistance {
+		// Max only: simple circle with maxDistance radius
+		maxDist := RandomMinDistance + g.rand.Float64()*(RandomMaxDistance-RandomMinDistance)
+
+		searchStage = bson.D{{Key: "$search", Value: bson.D{
+			{Key: "index", Value: "default"},
+			{Key: "geoWithin", Value: bson.D{
+				{Key: "path", Value: "location"},
+				{Key: "circle", Value: bson.D{
+					{Key: "center", Value: centerGeoJSON},
+					{Key: "radius", Value: maxDist},
+				}},
+			}},
+		}}}
+	} else {
+		// No distance limits: simple circle with max radius (10,000km)
+		searchStage = bson.D{{Key: "$search", Value: bson.D{
+			{Key: "index", Value: "default"},
+			{Key: "geoWithin", Value: bson.D{
+				{Key: "path", Value: "location"},
+				{Key: "circle", Value: bson.D{
+					{Key: "center", Value: centerGeoJSON},
+					{Key: "radius", Value: float64(AtlasGeoSearchMaxRadiusMeters)},
+				}},
+			}},
+		}}}
+	}
+
+	// Build pipeline with $search and $limit stages
+	pipeline := bson.A{
+		searchStage,
+		bson.D{{Key: "$limit", Value: params.Limit}},
+	}
+
+	return pipeline
 }
 
 // FormatGeoQuery returns a human-readable string representation of the query

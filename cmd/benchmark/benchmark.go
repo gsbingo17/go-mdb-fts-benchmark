@@ -269,7 +269,7 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 		}
 
 		if isCostModelMode {
-			if searchType == "geospatial_search" {
+			if searchType == "geospatial_search" || searchType == "atlas_geo_search" {
 				// CRITICAL: Geospatial uses SINGLE base collection, NOT sharded collections
 				// All geospatial documents go to the base collection
 				var geoDocs []database.Document
@@ -327,7 +327,7 @@ func (br *BenchmarkRunner) seedData(ctx context.Context, count int) error {
 		} else {
 			// Generate standard documents for benchmarking
 			var docs []database.Document
-			if searchType == "geospatial_search" {
+			if searchType == "geospatial_search" || searchType == "atlas_geo_search" {
 				// Generate geospatial documents with "location" field
 				docs = make([]database.Document, remaining)
 				for j := 0; j < remaining; j++ {
@@ -385,7 +385,7 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 			searchType = "text" // Default to text search
 		}
 
-		if searchType == "geospatial_search" {
+		if searchType == "geospatial_search" || searchType == "atlas_geo_search" {
 			// CRITICAL FIX: Geospatial uses SINGLE base collection, NOT sharded collections
 			// Count documents from base collection where geospatial data is actually stored
 			baseCollection := br.config.Database.Collection
@@ -398,6 +398,7 @@ func (br *BenchmarkRunner) setupData(ctx context.Context) error {
 			slog.Info("Counted existing documents in base collection (geospatial)",
 				"collection", baseCollection,
 				"count", count,
+				"search_type", searchType,
 				"note", "geospatial uses single collection, not sharded")
 		} else {
 			// Text/Atlas search: count documents across shard collections
@@ -480,6 +481,24 @@ func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 			slog.Info("Successfully created 2dsphere geospatial index on base collection",
 				"collection", baseCollection,
 				"index_type", "2dsphere")
+		} else if searchType == "atlas_geo_search" {
+			// Atlas Search geo: uses Atlas Search index with geo type mapping on location field
+			// Single base collection architecture (same as geospatial_search)
+			baseCollection := br.config.Database.Collection
+			slog.Info("Creating Atlas Search geo index on base collection",
+				"search_type", searchType,
+				"collection", baseCollection,
+				"index_field", "location",
+				"index_type", "atlas_search_geo",
+				"note", "text_shards ignored for geospatial - single collection architecture")
+
+			if err := br.database.CreateAtlasGeoSearchIndexForCollection(ctx, baseCollection); err != nil {
+				return fmt.Errorf("failed to create Atlas Search geo index for base collection %s: %w", baseCollection, err)
+			}
+
+			slog.Info("Successfully created Atlas Search geo index on base collection",
+				"collection", baseCollection,
+				"index_type", "atlas_search_geo")
 		} else if searchType == "atlas_search" || searchType == "spanner_search" {
 			// Atlas Search / Spanner SEARCH: uniform index across all shards (all fields indexed)
 			indexType := "Atlas Search"
@@ -535,6 +554,10 @@ func (br *BenchmarkRunner) createTextIndexForMode(ctx context.Context) error {
 			slog.Info("Creating 2dsphere geospatial index on location field",
 				"search_type", searchType)
 			return br.database.CreateGeoIndex(ctx, "location")
+		} else if searchType == "atlas_geo_search" {
+			slog.Info("Creating Atlas Search geo index on location field",
+				"search_type", searchType)
+			return br.database.CreateAtlasGeoSearchIndex(ctx)
 		} else if searchType == "atlas_search" || searchType == "spanner_search" {
 			indexType := "Atlas Search"
 			if searchType == "spanner_search" {
@@ -1153,7 +1176,7 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 	if searchType == "" {
 		searchType = "atlas_search" // Default for write workloads
 	}
-	isGeoWrite := searchType == "geospatial_search"
+	isGeoWrite := searchType == "geospatial_search" || searchType == "atlas_geo_search"
 
 	// Create geo generator if geospatial write mode
 	var geoGen *generator.GeoGenerator
@@ -1265,8 +1288,15 @@ func (br *BenchmarkRunner) executeWriteBenchmark(ctx context.Context) error {
 	// The preload step above creates the collection by inserting documents.
 	if br.config.Database.Type != "spanner" {
 		if *br.config.Workload.WriteSearchIndex {
-			if isGeoWrite {
-				// Geospatial write: create 2dsphere index on "location" field
+			if searchType == "atlas_geo_search" {
+				// Atlas Search geo write: create Atlas Search geo index on "location" field
+				slog.Info("Creating Atlas Search geo index on write collection", "collection", writeCollection, "field", "location")
+				if err := br.database.CreateAtlasGeoSearchIndexForCollection(ctx, writeCollection); err != nil {
+					slog.Warn("Failed to create Atlas Search geo index on write collection (may already exist)",
+						"collection", writeCollection, "error", err)
+				}
+			} else if searchType == "geospatial_search" {
+				// Traditional geospatial write: create 2dsphere index on "location" field
 				slog.Info("Creating 2dsphere geospatial index on write collection", "collection", writeCollection, "field", "location")
 				if err := br.database.CreateGeoIndexForCollection(ctx, writeCollection, "location"); err != nil {
 					slog.Warn("Failed to create 2dsphere index on write collection (may already exist)",

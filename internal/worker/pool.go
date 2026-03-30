@@ -101,16 +101,16 @@ func (wp *WorkerPool) Start() error {
 		searchType = "text"
 	}
 
-	// Create geo generator if using geospatial search
+	// Create geo generator if using geospatial search (either $nearSphere or Atlas Search geoWithin)
 	var geoGen *generator.GeoGenerator
-	if searchType == "geospatial_search" {
+	if searchType == "geospatial_search" || searchType == "atlas_geo_search" {
 		// Use configured seed for geospatial query generation, or timestamp if seed is 0
 		geoSeed := wp.config.GeoSeed
 		if geoSeed == 0 {
 			geoSeed = time.Now().UnixNano()
 		}
 		geoGen = generator.NewGeoGenerator(geoSeed)
-		slog.Info("Geospatial query generator initialized", "seed", geoSeed, "reproducible", wp.config.GeoSeed != 0)
+		slog.Info("Geospatial query generator initialized", "seed", geoSeed, "search_type", searchType, "reproducible", wp.config.GeoSeed != 0)
 	}
 
 	// Create read workers
@@ -129,8 +129,8 @@ func (wp *WorkerPool) Start() error {
 			// Get base collection name from database
 			baseCollection := wp.database.GetConnectionInfo().Collection
 
-			if searchType == "geospatial_search" {
-				// Configure for geospatial search
+			if searchType == "geospatial_search" || searchType == "atlas_geo_search" {
+				// Configure for geospatial search ($nearSphere or Atlas Search geoWithin)
 				// NOTE: Geospatial uses SINGLE collection (baseCollection), NOT sharded like text search
 				if len(wp.config.GeoQueryLimits) > 0 && len(wp.config.GeoDistanceVariants) > 0 {
 					geoQueryRequest := generator.GeoQueryRequest{
@@ -142,6 +142,7 @@ func (wp *WorkerPool) Start() error {
 					worker.SetGeoCostModelMode(true, geoQueryRequest, geoGen)
 					slog.Info("Configured read worker for geospatial cost model mode",
 						"worker_id", i,
+						"search_type", searchType,
 						"collection", baseCollection,
 						"limits", wp.config.GeoQueryLimits,
 						"variants", len(wp.config.GeoDistanceVariants))

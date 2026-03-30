@@ -463,6 +463,26 @@ func (d *DocumentDBClient) ExecuteGeoSearch(ctx context.Context, query interface
 	return d.ExecuteGeoSearchInCollection(ctx, d.config.Collection, query, limit)
 }
 
+// CreateAtlasGeoSearchIndex - Atlas Search geo not supported on DocumentDB
+func (d *DocumentDBClient) CreateAtlasGeoSearchIndex(ctx context.Context) error {
+	return fmt.Errorf("Atlas Search geo is not supported on AWS DocumentDB")
+}
+
+// CreateAtlasGeoSearchIndexForCollection - Atlas Search geo not supported on DocumentDB
+func (d *DocumentDBClient) CreateAtlasGeoSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	return fmt.Errorf("Atlas Search geo is not supported on AWS DocumentDB")
+}
+
+// ExecuteAtlasGeoSearchPipeline - Atlas Search geo not supported on DocumentDB
+func (d *DocumentDBClient) ExecuteAtlasGeoSearchPipeline(ctx context.Context, pipeline interface{}) (int, error) {
+	return 0, fmt.Errorf("Atlas Search geo is not supported on AWS DocumentDB")
+}
+
+// ExecuteAtlasGeoSearchPipelineInCollection - Atlas Search geo not supported on DocumentDB
+func (d *DocumentDBClient) ExecuteAtlasGeoSearchPipelineInCollection(ctx context.Context, collectionName string, pipeline interface{}) (int, error) {
+	return 0, fmt.Errorf("Atlas Search geo is not supported on AWS DocumentDB")
+}
+
 // ExecuteGeoSearchInCollection performs geospatial search using $nearSphere in a specific collection
 func (d *DocumentDBClient) ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error) {
 	coll := d.database.Collection(collectionName)

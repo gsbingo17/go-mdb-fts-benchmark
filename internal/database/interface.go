@@ -55,9 +55,17 @@ type Database interface {
 	DropSearchIndexes(ctx context.Context) error
 	DropSearchIndexesForCollection(ctx context.Context, collectionName string) error
 
-	// Geospatial index management
+	// Geospatial index management (2dsphere for $nearSphere)
 	CreateGeoIndex(ctx context.Context, fieldName string) error
 	CreateGeoIndexForCollection(ctx context.Context, collectionName string, fieldName string) error
+
+	// Atlas Search geo index management (for $geoWithin via $search)
+	CreateAtlasGeoSearchIndex(ctx context.Context) error
+	CreateAtlasGeoSearchIndexForCollection(ctx context.Context, collectionName string) error
+
+	// Atlas Search geo pipeline execution (for $search with geoWithin)
+	ExecuteAtlasGeoSearchPipeline(ctx context.Context, pipeline interface{}) (int, error)
+	ExecuteAtlasGeoSearchPipelineInCollection(ctx context.Context, collectionName string, pipeline interface{}) (int, error)
 
 	// Data operations
 	ExecuteTextSearch(ctx context.Context, query string, limit int) (int, error)

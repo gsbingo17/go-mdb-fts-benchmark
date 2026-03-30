@@ -988,3 +988,23 @@ func (s *SpannerClient) ExecuteGeoSearch(ctx context.Context, query interface{},
 func (s *SpannerClient) ExecuteGeoSearchInCollection(ctx context.Context, collectionName string, query interface{}, limit int) (int, error) {
 	return 0, fmt.Errorf("geospatial search is not supported on Google Cloud Spanner")
 }
+
+// CreateAtlasGeoSearchIndex - Atlas Search geo not supported on Spanner
+func (s *SpannerClient) CreateAtlasGeoSearchIndex(ctx context.Context) error {
+	return fmt.Errorf("Atlas Search geo is not supported on Google Cloud Spanner")
+}
+
+// CreateAtlasGeoSearchIndexForCollection - Atlas Search geo not supported on Spanner
+func (s *SpannerClient) CreateAtlasGeoSearchIndexForCollection(ctx context.Context, collectionName string) error {
+	return fmt.Errorf("Atlas Search geo is not supported on Google Cloud Spanner")
+}
+
+// ExecuteAtlasGeoSearchPipeline - Atlas Search geo not supported on Spanner
+func (s *SpannerClient) ExecuteAtlasGeoSearchPipeline(ctx context.Context, pipeline interface{}) (int, error) {
+	return 0, fmt.Errorf("Atlas Search geo is not supported on Google Cloud Spanner")
+}
+
+// ExecuteAtlasGeoSearchPipelineInCollection - Atlas Search geo not supported on Spanner
+func (s *SpannerClient) ExecuteAtlasGeoSearchPipelineInCollection(ctx context.Context, collectionName string, pipeline interface{}) (int, error) {
+	return 0, fmt.Errorf("Atlas Search geo is not supported on Google Cloud Spanner")
+}
