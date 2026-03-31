@@ -220,7 +220,7 @@ func validate(config *Config) error {
 		}
 
 		// Geospatial search has different requirements than text/atlas search
-		if searchType == "geospatial_search" {
+		if searchType == "geospatial_search" || searchType == "atlas_geo_search" {
 			// Validate geospatial-specific configuration
 			if len(config.Workload.GeoQueryLimits) == 0 {
 				return fmt.Errorf("workload.geo_query_limits array cannot be empty for geospatial search in cost_model mode")
